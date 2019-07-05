@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2014-2016 Meltytech, LLC
- * Author: Brian Matherly <code@brianmatherly.com>
+ * Copyright (c) 2014-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,143 +16,149 @@
  */
  
 import QtQuick 2.2
-import QtQuick.Window 2.2
 import QtQuick.Controls 1.0
 import QtQuick.Layouts 1.1
-import 'FilterMenu.js' as Logic
 import org.shotcut.qml 1.0 as Shotcut
+import Shotcut.Controls 1.0 as ShotcutControls
 
-Window {
+Rectangle {
     id: filterWindow
     visible: false
-
-    property bool hasFocus: activeFocusItem != null
+    property color checkedColor: Qt.rgba(activePalette.highlight.r, activePalette.highlight.g, activePalette.highlight.b, 0.4)
 
     signal filterSelected(int index)
 
-    function popup(triggerItem) {
-        var menuRect = Logic.calcMenuRect(triggerItem, toolBar.height + 2)
-        filterWindow.x = Math.min(Math.max(menuRect.x, 0), Screen.width - menuRect.width)
-        filterWindow.y = Math.min(Math.max(menuRect.y, 0), Screen.height - menuRect.height)
-        filterWindow.height = menuRect.height
-        filterWindow.show()
-        filterWindow.requestActivate()
-
+    function open() {
+        filterWindow.visible = true
+        searchField.focus = true
     }
 
-    color: Qt.darker(activePalette.window, 1.5) // Border color
-    flags: Qt.ToolTip
-    width: 220
-    height: 200
-    onHasFocusChanged: if (!hasFocus) filterWindow.close()
+    function close() {
+        filterWindow.visible = false
+        searchField.text = ''
+        searchField.focus = false
+    }
+
+    color: activePalette.window
 
     SystemPalette { id: activePalette }
 
-    Rectangle {
-        id: menuColorRect
-        anchors.fill: parent
-        anchors.margins: 1
-        color: activePalette.base
+    ColumnLayout {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.margins: 8
 
-        Column {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.margins: 2
+        RowLayout {
+            id: searchBar
+            Layout.fillWidth: true
+            property var savedFilter
 
-            ScrollView {
-                width: parent.width
-                height: filterWindow.height - toolBar.height - 2
-                ListView {
-                    id: menuListView
-
-                    function itemSelected(index) {
+            TextField {
+                id: searchField
+                Layout.fillWidth: true
+                focus: true
+                placeholderText: qsTr("search")
+                text: metadatamodel.search
+                onTextChanged: {
+                    if (length !== 1 && text !== metadatamodel.search) {
+                        metadatamodel.search = text
+                    }
+                    if (length > 0) {
+                        parent.savedFilter = typeGroup.current
+                        favButton.checked = vidButton.checked = audButton.checked = false
+                    } else {
+                        parent.savedFilter.checked = true
+                    }
+                }
+                Keys.onEscapePressed: {
+                    if (text !== '')
+                        text = ''
+                    else
                         filterWindow.close()
-                        filterSelected(index)
-                    }
-
-                    anchors.fill: parent
-                    model: metadatamodel
-                    delegate: FilterMenuDelegate {}
-                    boundsBehavior: Flickable.StopAtBounds
-                    snapMode: ListView.SnapToItem
-                    currentIndex: -1
-                    focus: true
                 }
             }
-
-            Rectangle {
-                id: separatorBar
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: parent.width
-                height: 1
-                color: Qt.darker(activePalette.window, 1.5)
+            ToolButton {
+                id: clearButton
+                implicitWidth: 20
+                implicitHeight: 20
+                iconName: 'edit-clear'
+                iconSource: 'qrc:///icons/oxygen/32x32/actions/edit-clear.png'
+                tooltip: qsTr('Clear search')
+                onClicked: searchField.text = ''
             }
+        }
 
-            RowLayout {
-                id: toolBar
-                height: 30
-                width: parent.width
+        RowLayout {
+            id: toolBar
+            Layout.fillWidth: true
 
-                ExclusiveGroup { id: typeGroup }
+            ExclusiveGroup { id: typeGroup }
 
-                ToolButton {
-                    id: favButton
-                    implicitWidth: 28
-                    implicitHeight: 24
-                    checkable: true
-                    checked: true
-                    iconName: 'bookmarks'
-                    iconSource: 'qrc:///icons/oxygen/32x32/places/bookmarks.png'
-                    tooltip: qsTr('Show favorite filters')
-                    exclusiveGroup: typeGroup
-                    onCheckedChanged: {
-                        if (checked) {
-                            metadatamodel.filter = Shotcut.MetadataModel.FavoritesFilter
-                        }
-                    }
+            ShotcutControls.ToggleButton {
+                id: favButton
+                checked: true
+                implicitWidth: 80
+                iconName: 'bookmarks'
+                iconSource: 'qrc:///icons/oxygen/32x32/places/bookmarks.png'
+                text: qsTr('Favorite')
+                tooltip: qsTr('Show favorite filters')
+                exclusiveGroup: typeGroup
+                onClicked: if (checked) metadatamodel.filter = Shotcut.MetadataModel.FavoritesFilter
+            }
+            ShotcutControls.ToggleButton {
+                id: vidButton
+                implicitWidth: 80
+                iconName: 'video-television'
+                iconSource: 'qrc:///icons/oxygen/32x32/devices/video-television.png'
+                text: qsTr('Video')
+                tooltip: qsTr('Show video filters')
+                exclusiveGroup: typeGroup
+                onClicked: if (checked) metadatamodel.filter = Shotcut.MetadataModel.VideoFilter
+            }
+            ShotcutControls.ToggleButton {
+                id: audButton
+                implicitWidth: 80
+                iconName: 'speaker'
+                iconSource: 'qrc:///icons/oxygen/32x32/actions/speaker.png'
+                text: qsTr('Audio')
+                tooltip: qsTr('Show audio filters')
+                exclusiveGroup: typeGroup
+                onClicked: if (checked) metadatamodel.filter = Shotcut.MetadataModel.AudioFilter
+            }
+            Button { // separator
+                enabled: false
+                implicitWidth: 1
+                implicitHeight: 20
+            }
+            Button {
+                id: closeButton
+                iconName: 'window-close'
+                iconSource: 'qrc:///icons/oxygen/32x32/actions/window-close.png'
+                tooltip: qsTr('Close menu')
+                onClicked: filterWindow.close()
+            }
+            Item {
+                Layout.fillWidth: true
+            }
+        }
+        ScrollView {
+            Layout.fillWidth: true
+            Layout.preferredHeight: filterWindow.height - toolBar.height - searchBar.height - parent.anchors.margins * 2
+
+            ListView {
+                id: menuListView
+
+                function itemSelected(index) {
+                    filterWindow.close()
+                    filterSelected(index)
                 }
-                ToolButton {
-                    id: vidButton
-                    implicitWidth: 28
-                    implicitHeight: 24
-                    checkable: true
-                    iconName: 'video-television'
-                    iconSource: 'qrc:///icons/oxygen/32x32/devices/video-television.png'
-                    tooltip: qsTr('Show video filters')
-                    exclusiveGroup: typeGroup
-                    onCheckedChanged: {
-                        if (checked) {
-                            metadatamodel.filter = Shotcut.MetadataModel.VideoFilter
-                        }
-                    }
-                }
-                ToolButton {
-                    id: audButton
-                    implicitWidth: 28
-                    implicitHeight: 24
-                    checkable: true
-                    iconName: 'speaker'
-                    iconSource: 'qrc:///icons/oxygen/32x32/actions/speaker.png'
-                    tooltip: qsTr('Show audio filters')
-                    exclusiveGroup: typeGroup
-                    onCheckedChanged: {
-                        if (checked) {
-                            metadatamodel.filter = Shotcut.MetadataModel.AudioFilter
-                        }
-                    }
-                }
-                Item {
-                    Layout.fillWidth: true
-                }
-                ToolButton {
-                    id: closeButton
-                    implicitWidth: 28
-                    implicitHeight: 24
-                    iconName: 'window-close'
-                    iconSource: 'qrc:///icons/oxygen/32x32/actions/window-close.png'
-                    tooltip: qsTr('Close menu')
-                    onClicked: filterWindow.close()
-                }
+
+                anchors.fill: parent
+                model: metadatamodel
+                delegate: FilterMenuDelegate {}
+                boundsBehavior: Flickable.StopAtBounds
+                currentIndex: -1
+                focus: true
             }
         }
     }

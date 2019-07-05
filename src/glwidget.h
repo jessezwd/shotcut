@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2015 Meltytech, LLC
+ * Copyright (c) 2011-2017 Meltytech, LLC
  * Author: Dan Dennedy <dan@dennedy.org>
  * 
  * This program is free software: you can redistribute it and/or modify
@@ -49,6 +49,8 @@ class GLWidget : public QQuickWidget, public Controller, protected QOpenGLFuncti
 {
     Q_OBJECT
     Q_PROPERTY(QRect rect READ rect NOTIFY rectChanged)
+    Q_PROPERTY(int grid READ grid NOTIFY gridChanged)
+    Q_PROPERTY(bool snapToGrid READ snapToGrid NOTIFY snapToGridChanged)
     Q_PROPERTY(float zoom READ zoom NOTIFY zoomChanged)
     Q_PROPERTY(QPoint offset READ offset NOTIFY offsetChanged)
 
@@ -81,18 +83,22 @@ public:
     QObject* videoWidget() { return this; }
     Filter* glslManager() const { return m_glslManager; }
     QRect rect() const { return m_rect; }
+    int grid() const { return m_grid; }
     float zoom() const { return m_zoom * MLT.profile().width() / m_rect.width(); }
     QPoint offset() const;
     QImage image() const;
     void requestImage() const;
+    bool snapToGrid() const { return m_snapToGrid; }
 
 public slots:
     void onFrameDisplayed(const SharedFrame& frame);
+    void setGrid(int grid);
     void setZoom(float zoom);
     void setOffsetX(int x);
     void setOffsetY(int y);
     void setBlankScene();
     void setCurrentFilter(QmlFilter* filter, QmlMetadata* meta);
+    void setSnapToGrid(bool snap);
 
 signals:
     void frameDisplayed(const SharedFrame& frame);
@@ -103,12 +109,15 @@ signals:
     void paused();
     void playing();
     void rectChanged();
+    void gridChanged();
     void zoomChanged();
     void offsetChanged();
     void imageReady();
+    void snapToGridChanged();
 
 private:
     QRect m_rect;
+    int m_grid;
     GLuint m_texture[3];
     QOpenGLShaderProgram* m_shader;
     QPoint m_dragStart;
@@ -132,6 +141,8 @@ private:
     QOpenGLContext* m_shareContext;
     SharedFrame m_sharedFrame;
     QMutex m_mutex;
+    QUrl m_savedQmlSource;
+    bool m_snapToGrid;
 
     static void on_frame_show(mlt_consumer, void* self, mlt_frame frame);
 
@@ -188,7 +199,6 @@ signals:
 
 private:
     QSemaphore m_semaphore;
-    SharedFrame m_renderFrame;
     SharedFrame m_displayFrame;
     QOpenGLContext* m_context;
     QSurface* m_surface;

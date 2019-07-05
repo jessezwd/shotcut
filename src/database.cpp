@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -41,10 +40,12 @@ struct DatabaseJob {
 };
 
 static Database* instance = 0;
+static bool g_isShutdown = false;
 
 Database::Database(QObject *parent) :
     QThread(parent)
     , m_commitTimer(0)
+    , m_isFailing(false)
 {
 }
 
@@ -59,6 +60,7 @@ Database &Database::singleton(QWidget *parent)
 
 bool Database::upgradeVersion1()
 {
+    if (!QSqlDatabase::database().isOpen()) return false;
     bool success = false;
     QSqlQuery query;
     if (query.exec("CREATE TABLE thumbnails (hash TEXT PRIMARY KEY NOT NULL, accessed DATETIME NOT NULL, image BLOB);")) {
@@ -93,6 +95,7 @@ void Database::doJob(DatabaseJob * job)
         job->result = query.exec();
         if (!job->result)
             LOG_ERROR() << query.lastError();
+        m_isFailing = !job->result;
     } else if (job->type == DatabaseJob::GetThumbnail) {
         QImage result;
         QSqlQuery query;
@@ -103,7 +106,8 @@ void Database::doJob(DatabaseJob * job)
             QSqlQuery update;
             update.prepare("UPDATE thumbnails SET accessed = datetime('now') WHERE hash = :hash ;");
             update.bindValue(":hash", job->hash);
-            if (!update.exec())
+            m_isFailing = !update.exec();
+            if (m_isFailing)
                 LOG_ERROR() << update.lastError();
         }
         job->image = result;
@@ -119,6 +123,7 @@ void Database::commitTransaction()
 
 bool Database::putThumbnail(const QString& hash, const QImage& image)
 {
+    if (!QSqlDatabase::database().isOpen()) return false;
     DatabaseJob job;
     job.type = DatabaseJob::PutThumbnail;
     job.hash = hash;
@@ -144,6 +149,7 @@ void Database::submitAndWaitForJob(DatabaseJob * job)
 
 QImage Database::getThumbnail(const QString &hash)
 {
+    if (!QSqlDatabase::database().isOpen()) return QImage();
     DatabaseJob job;
     job.type = DatabaseJob::GetThumbnail;
     job.hash = hash;
@@ -151,20 +157,27 @@ QImage Database::getThumbnail(const QString &hash)
     return job.image;
 }
 
+bool Database::isShutdown() const
+{
+    return g_isShutdown;
+}
+
 void Database::shutdown()
 {
+    g_isShutdown = true;
     requestInterruption();
     wait();
     QString connection = QSqlDatabase::database().connectionName();
     QSqlDatabase::database().close();
     QSqlDatabase::removeDatabase(connection);
+    LOG_DEBUG() << "database closed";
     instance = 0;
 }
 
 void Database::deleteOldThumbnails()
 {
     QSqlQuery query;
-    // OFFSET is the numner of thumbnails to cache.
+    // OFFSET is the number of thumbnails to cache.
     if (!query.exec("DELETE FROM thumbnails WHERE hash IN (SELECT hash FROM thumbnails ORDER BY accessed DESC LIMIT -1 OFFSET 10000);"))
         LOG_ERROR() << query.lastError();
 }

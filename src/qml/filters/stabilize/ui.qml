@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2015 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,7 +25,7 @@ Item {
     id: stabilizeRoot
     width: 350
     height: 150
-    property string settingsSavePath: settings.savePath
+    property url settingsSavePath: 'file:///' + settings.savePath
     property string _analysisRequiredMessage: qsTr('Click Analyze to use this filter.')
 
     Component.onCompleted: {
@@ -57,6 +56,14 @@ Item {
     function analyzeValueChanged() {
         button.enabled = true
         status.text = _analysisRequiredMessage
+    }
+
+    function startAnalyzeJob(filename) {
+        stabilizeRoot.fileSaved(filename)
+        filter.set('filename', filename)
+        filter.getHash()
+        setStatus(true)
+        filter.analyze();
     }
 
     // This signal is used to workaround context properties not available in
@@ -95,7 +102,6 @@ Item {
                 // In Windows, the prefix is a little different
                 filename = filename.substring(1)
             }
-            stabilizeRoot.fileSaved(filename)
 
             var extension = ".stab"
             // Force file extension to ".stab"
@@ -103,10 +109,7 @@ Item {
             if (extIndex == -1) {
                 filename += ".stab"
             }
-            filter.set('filename', filename)
-            filter.getHash()
-            setStatus(true)
-            filter.analyze();
+            startAnalyzeJob(filename)
         }
         onRejected: {
             button.enabled = true
@@ -167,8 +170,13 @@ Item {
             Layout.alignment: Qt.AlignRight
             onClicked: {
                 button.enabled = false
-                fileDialog.folder = settings.savePath
-                fileDialog.open()
+                var filename = application.getNextProjectFile('stab')
+                if (filename) {
+                    stabilizeRoot.fileSaved(filename)
+                    startAnalyzeJob(filename)
+                } else {
+                    fileDialog.open()
+                }
             }
         }
         Label {

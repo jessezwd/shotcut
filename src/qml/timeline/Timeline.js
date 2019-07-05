@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2015 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,12 +18,21 @@
 function scrollIfNeeded() {
     var x = timeline.position * multitrack.scaleFactor;
     if (!scrollView) return;
-    if (x > scrollView.flickableItem.contentX + scrollView.width - 50)
-        scrollView.flickableItem.contentX = x - scrollView.width + 50;
-    else if (x < 50)
-        scrollView.flickableItem.contentX = 0;
-    else if (x < scrollView.flickableItem.contentX + 50)
-        scrollView.flickableItem.contentX = x - 50;
+    if (settings.timelineCenterPlayhead) {
+        if (x > scrollView.flickableItem.contentX + scrollView.width * 0.5)
+            scrollView.flickableItem.contentX = x - scrollView.width * 0.5;
+        else if (x < scrollView.width * 0.5)
+            scrollView.flickableItem.contentX = 0;
+        else if (x < scrollView.flickableItem.contentX + scrollView.width * 0.5)
+            scrollView.flickableItem.contentX = x - scrollView.width * 0.5;
+    } else {
+        if (x > scrollView.flickableItem.contentX + scrollView.width - 50)
+            scrollView.flickableItem.contentX = x - scrollView.width + 50;
+        else if (x < 50)
+            scrollView.flickableItem.contentX = 0;
+        else if (x < scrollView.flickableItem.contentX + 50)
+            scrollView.flickableItem.contentX = x - 50;
+    }
 }
 
 function dragging(pos, duration) {
@@ -75,7 +83,7 @@ function dragging(pos, duration) {
             timeline.position = Math.round(
                 (pos.x + scrollView.flickableItem.contentX - headerWidth) / multitrack.scaleFactor)
         }
-        if (toolbar.snap) {
+        if (settings.timelineSnap) {
             for (i = 0; i < tracksRepeater.count; i++)
                 tracksRepeater.itemAt(i).snapDrop(pos)
         }
@@ -89,7 +97,7 @@ function dropped() {
 
 function acceptDrop(xml) {
     var position = Math.round((dropTarget.x + scrollView.flickableItem.contentX - headerWidth) / multitrack.scaleFactor)
-    if (toolbar.ripple)
+    if (settings.timelineRipple)
         timeline.insert(currentTrack, position, xml)
     else
         timeline.overwrite(currentTrack, position, xml)
@@ -97,4 +105,39 @@ function acceptDrop(xml) {
 
 function trackHeight(isAudio) {
     return isAudio? Math.max(40, multitrack.trackHeight) : multitrack.trackHeight * 2
+}
+
+function clamp(x, minimum, maximum) {
+    return Math.min(Math.max(x, minimum), maximum)
+}
+
+function onMouseWheel(wheel) {
+    if ((wheel.modifiers & Qt.ControlModifier) || (wheel.modifiers & Qt.ShiftModifier)) {
+        // Zoom
+        if (wheel.modifiers & Qt.ControlModifier) {
+            adjustZoom(wheel.angleDelta.y / 720)
+        }
+        if (wheel.modifiers & Qt.ShiftModifier) {
+            multitrack.trackHeight = Math.max(30, multitrack.trackHeight + wheel.angleDelta.y / 5)
+        }
+    } else {
+        // Scroll
+        var maxWidth = Math.max(scrollView.flickableItem.contentWidth - scrollView.width + 14, 0)
+        var maxHeight = Math.max(scrollView.flickableItem.contentHeight - scrollView.height + 14, 0)
+        if (wheel.pixelDelta.x || wheel.pixelDelta.y) {
+            // Track pads provide both horizontal and vertical.
+            var x = wheel.pixelDelta.x
+            var y = wheel.pixelDelta.y
+            if (!y || Math.abs(x) > 2)
+                scrollView.flickableItem.contentX = clamp(scrollView.flickableItem.contentX - x, 0, maxWidth)
+            scrollView.flickableItem.contentY = clamp(scrollView.flickableItem.contentY - y, 0, maxHeight)
+        } else {
+            // Vertical only mouse wheel requires modifier for vertical scroll.
+            var y = Math.round(wheel.angleDelta.y / 5)
+            if ((wheel.modifiers & Qt.AltModifier) || (wheel.modifiers & Qt.MetaModifier))
+                scrollView.flickableItem.contentX = clamp(scrollView.flickableItem.contentX - y, 0, maxWidth)
+            else
+                scrollView.flickableItem.contentY = clamp(scrollView.flickableItem.contentY - y, 0, maxHeight)
+        }
+    }
 }

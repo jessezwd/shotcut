@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2012-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2012-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,19 +27,54 @@
 #include <Logger.h>
 #include "mainwindow.h"
 #include "dialogs/textviewerdialog.h"
+#include "util.h"
 
-MeltJob::MeltJob(const QString& name, const QString& xml)
+MeltJob::MeltJob(const QString& name, const QString& xml, int frameRateNum, int frameRateDen)
     : AbstractJob(name)
-    , m_xml(QDir::tempPath().append("/shotcut-XXXXXX.mlt"))
     , m_isStreaming(false)
+    , m_previousPercent(0)
+    , m_currentFrame(0)
+    , m_useMultiConsumer(false)
 {
-    QAction* action = new QAction(tr("View XML"), this);
-    action->setToolTip(tr("View the MLT XML for this job"));
-    connect(action, SIGNAL(triggered()), this, SLOT(onViewXmlTriggered()));
-    m_standardActions << action;
-    m_xml.open();
-    m_xml.write(xml.toUtf8());
-    m_xml.close();
+    if (!xml.isEmpty()) {
+        QAction* action = new QAction(tr("View XML"), this);
+        action->setToolTip(tr("View the MLT XML for this job"));
+        connect(action, SIGNAL(triggered()), this, SLOT(onViewXmlTriggered()));
+        m_standardActions << action;
+        m_xml.setFileTemplate(QDir::tempPath().append("/shotcut-XXXXXX.mlt"));
+        m_xml.open();
+        m_xml.write(xml.toUtf8());
+        m_xml.close();
+    } else {
+        // Not an EncodeJob
+        QAction* action = new QAction(tr("Open"), this);
+        action->setToolTip(tr("Open the output file in the Shotcut player"));
+        connect(action, SIGNAL(triggered()), this, SLOT(onOpenTiggered()));
+        m_successActions << action;
+    
+        action = new QAction(tr("Show In Folder"), this);
+        action->setToolTip(tr("Show In Folder"));
+        connect(action, SIGNAL(triggered()), this, SLOT(onShowFolderTriggered()));
+        m_successActions << action;
+    }
+    if (frameRateNum > 0 && frameRateDen > 0)
+        m_profile.set_frame_rate(frameRateNum, frameRateDen);
+}
+
+void MeltJob::onOpenTiggered()
+{
+    MAIN.open(objectName().toUtf8().constData());
+}
+
+void MeltJob::onShowFolderTriggered()
+{
+    Util::showInFolder(objectName());
+}
+
+MeltJob::MeltJob(const QString& name, const QStringList& args, int frameRateNum, int frameRateDen)
+    : MeltJob(name, QString(), frameRateNum, frameRateDen)
+{
+    m_args = args;
 }
 
 MeltJob::~MeltJob()
@@ -61,7 +95,13 @@ void MeltJob::start()
     args << "-verbose";
     args << "-progress2";
     args << "-abort";
-    args << xmlPath();
+    if (m_args.size() > 0) {
+        args.append(m_args);
+    } else if (m_useMultiConsumer) {
+        args << xmlPath() + "?multi:1";
+    } else {
+        args << xmlPath();
+    }
     LOG_DEBUG() << meltPath.absoluteFilePath() << args;
 #ifdef Q_OS_WIN
     if (m_isStreaming) args << "-getc";
@@ -86,6 +126,11 @@ void MeltJob::setIsStreaming(bool streaming)
     m_isStreaming = streaming;
 }
 
+void MeltJob::setUseMultiConsumer(bool multi)
+{
+    m_useMultiConsumer = multi;
+}
+
 void MeltJob::onViewXmlTriggered()
 {
     TextViewerDialog dialog(&MAIN);
@@ -96,12 +141,36 @@ void MeltJob::onViewXmlTriggered()
 
 void MeltJob::onReadyRead()
 {
-    QString msg = readLine();
-    if (msg.contains("percentage:")) {
-        uint percent = msg.mid(msg.indexOf("percentage:") + 11).toUInt();
-        emit progressUpdated(m_index, percent);
-    }
-    else {
-        appendToLog(msg);
+    QString msg;
+    do {
+        msg = readLine();
+        int index = msg.indexOf("Frame:");
+        if (index > -1) {
+            index += 6;
+            int comma = msg.indexOf(',', index);
+            m_currentFrame = msg.mid(index, comma - index).toInt();
+        }
+        index = msg.indexOf("percentage:");
+        if (index > -1) {
+            int percent = msg.mid(index + 11).toInt();
+            if (percent != m_previousPercent) {
+                emit progressUpdated(m_item, percent);
+                QCoreApplication::processEvents();
+                m_previousPercent = percent;
+            }
+        }
+        else {
+            appendToLog(msg);
+        }
+    } while (!msg.isEmpty());
+}
+
+void MeltJob::onFinished(int exitCode, QProcess::ExitStatus exitStatus)
+{
+    AbstractJob::onFinished(exitCode, exitStatus);
+    if (exitStatus != QProcess::NormalExit && exitCode != 0 && !stopped()) {
+        Mlt::Producer producer(m_profile, "colour:");
+        QString time = QString::fromLatin1(producer.frames_to_time(m_currentFrame));
+        emit finished(this, false, time);
     }
 }

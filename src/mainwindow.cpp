@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2011-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2011-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -47,10 +46,6 @@
 #include "jobqueue.h"
 #include "docks/playlistdock.h"
 #include "glwidget.h"
-#include "mvcp/meltedserverdock.h"
-#include "mvcp/meltedplaylistdock.h"
-#include "mvcp/meltedunitsmodel.h"
-#include "mvcp/meltedplaylistmodel.h"
 #include "controllers/filtercontroller.h"
 #include "controllers/scopecontroller.h"
 #include "docks/filtersdock.h"
@@ -74,6 +69,12 @@
 #include "widgets/trackpropertieswidget.h"
 #include "widgets/timelinepropertieswidget.h"
 #include "dialogs/unlinkedfilesdialog.h"
+#include "docks/keyframesdock.h"
+#include "util.h"
+#include "models/keyframesmodel.h"
+#include "dialogs/listselectiondialog.h"
+#include "widgets/textproducerwidget.h"
+#include "qmltypes/qmlprofile.h"
 
 #include <QtWidgets>
 #include <Logger.h>
@@ -85,6 +86,9 @@
 #include <QJsonDocument>
 #include <QJSEngine>
 #include <QDirIterator>
+#include <QQuickWindow>
+#include <QVersionNumber>
+#include <clocale>
 
 static bool eventDebugCallback(void **data)
 {
@@ -100,20 +104,19 @@ static bool eventDebugCallback(void **data)
     return false;
 }
 
-static const int AUTOSAVE_TIMEOUT_MS = 10000;
+static const int AUTOSAVE_TIMEOUT_MS = 30000;
 
 MainWindow::MainWindow()
     : QMainWindow(0)
     , ui(new Ui::MainWindow)
     , m_isKKeyPressed(false)
-    , m_meltedServerDock(0)
-    , m_meltedPlaylistDock(0)
     , m_keyerGroup(0)
     , m_keyerMenu(0)
     , m_isPlaylistLoaded(false)
     , m_exitCode(EXIT_SUCCESS)
     , m_navigationPosition(0)
     , m_upgradeUrl("https://www.shotcut.org/download/")
+    , m_keyframesDock(0)
 {
 #if defined(Q_OS_UNIX) && !defined(Q_OS_MAC)
     QLibrary libJack("libjack.so.0");
@@ -124,10 +127,10 @@ MainWindow::MainWindow()
     } else {
         libJack.unload();
     }
-    QLibrary libSDL("libSDL-1.2.so.0");
+    QLibrary libSDL("libSDL2-2.0.so.0");
     if (!libSDL.load()) {
         QMessageBox::critical(this, qApp->applicationName(),
-            tr("Error: This program requires the SDL 1.2 library.\n\nPlease install it using your package manager. It may be named libsdl1.2debian, SDL, or similar."));
+            tr("Error: This program requires the SDL 2 library.\n\nPlease install it using your package manager. It may be named libsdl2-2.0-0, SDL2, or similar."));
         ::exit(EXIT_FAILURE);
     } else {
         libSDL.unload();
@@ -160,10 +163,6 @@ MainWindow::MainWindow()
 
     // Create the UI.
     ui->setupUi(this);
-#if defined(Q_OS_UNIX) && !defined(Q_OS_MAC)
-    if (Settings.theme() == "light" || Settings.theme() == "dark" )
-#endif
-    ui->mainToolBar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
 #ifdef Q_OS_MAC
     // Qt 5 on OS X supports the standard Full Screen window widget.
     ui->mainToolBar->removeAction(ui->actionFullscreen);
@@ -198,7 +197,11 @@ MainWindow::MainWindow()
     undoAction->setIcon(QIcon::fromTheme("edit-undo", QIcon(":/icons/oxygen/32x32/actions/edit-undo.png")));
     redoAction->setIcon(QIcon::fromTheme("edit-redo", QIcon(":/icons/oxygen/32x32/actions/edit-redo.png")));
     undoAction->setShortcut(QApplication::translate("MainWindow", "Ctrl+Z", 0));
+#ifdef Q_OS_WIN
+    redoAction->setShortcut(QApplication::translate("MainWindow", "Ctrl+Y", 0));
+#else
     redoAction->setShortcut(QApplication::translate("MainWindow", "Ctrl+Shift+Z", 0));
+#endif
     ui->menuEdit->insertAction(ui->actionCut, undoAction);
     ui->menuEdit->insertAction(ui->actionCut, redoAction);
     ui->menuEdit->insertSeparator(ui->actionCut);
@@ -223,13 +226,20 @@ MainWindow::MainWindow()
     connect(MLT.videoWidget(), SIGNAL(playing()), m_player, SLOT(showPlaying()));
 
     setupSettingsMenu();
+    setupOpenOtherMenu();
     readPlayerSettings();
     configureVideoWidget();
+
+#ifndef SHOTCUT_NOUPGRADE
+    if (Settings.noUpgrade() || qApp->property("noupgrade").toBool())
+#endif
+        delete ui->actionUpgrade;
 
     // Add the docks.
     m_scopeController = new ScopeController(this, ui->menuView);
     QDockWidget* audioMeterDock = findChild<QDockWidget*>("AudioPeakMeterDock");
     if (audioMeterDock) {
+        audioMeterDock->toggleViewAction()->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_1));
         connect(ui->actionAudioMeter, SIGNAL(triggered()), audioMeterDock->toggleViewAction(), SLOT(trigger()));
     }
 
@@ -237,6 +247,7 @@ MainWindow::MainWindow()
     m_propertiesDock->hide();
     m_propertiesDock->setObjectName("propertiesDock");
     m_propertiesDock->setWindowIcon(ui->actionProperties->icon());
+    m_propertiesDock->toggleViewAction()->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_2));
     m_propertiesDock->toggleViewAction()->setIcon(ui->actionProperties->icon());
     m_propertiesDock->setMinimumWidth(300);
     QScrollArea* scroll = new QScrollArea;
@@ -250,6 +261,7 @@ MainWindow::MainWindow()
     m_recentDock = new RecentDock(this);
     m_recentDock->hide();
     addDockWidget(Qt::RightDockWidgetArea, m_recentDock);
+    m_recentDock->toggleViewAction()->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_3));
     ui->menuView->addAction(m_recentDock->toggleViewAction());
     connect(m_recentDock, SIGNAL(itemActivated(QString)), this, SLOT(open(QString)));
     connect(m_recentDock->toggleViewAction(), SIGNAL(triggered(bool)), this, SLOT(onRecentDockTriggered(bool)));
@@ -259,6 +271,7 @@ MainWindow::MainWindow()
     m_playlistDock = new PlaylistDock(this);
     m_playlistDock->hide();
     addDockWidget(Qt::LeftDockWidgetArea, m_playlistDock);
+    m_playlistDock->toggleViewAction()->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_4));
     ui->menuView->addAction(m_playlistDock->toggleViewAction());
     connect(m_playlistDock->toggleViewAction(), SIGNAL(triggered(bool)), this, SLOT(onPlaylistDockTriggered(bool)));
     connect(ui->actionPlaylist, SIGNAL(triggered()), this, SLOT(onPlaylistDockTriggered()));
@@ -279,6 +292,7 @@ MainWindow::MainWindow()
     m_timelineDock = new TimelineDock(this);
     m_timelineDock->hide();
     addDockWidget(Qt::BottomDockWidgetArea, m_timelineDock);
+    m_timelineDock->toggleViewAction()->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_5));
     ui->menuView->addAction(m_timelineDock->toggleViewAction());
     connect(m_timelineDock->toggleViewAction(), SIGNAL(triggered(bool)), this, SLOT(onTimelineDockTriggered(bool)));
     connect(ui->actionTimeline, SIGNAL(triggered()), SLOT(onTimelineDockTriggered()));
@@ -294,9 +308,11 @@ MainWindow::MainWindow()
     connect(m_timelineDock->model(), SIGNAL(durationChanged()), SLOT(onMultitrackDurationChanged()));
     connect(m_timelineDock, SIGNAL(clipOpened(Mlt::Producer*)), SLOT(openCut(Mlt::Producer*)));
     connect(m_timelineDock->model(), SIGNAL(seeked(int)), SLOT(seekTimeline(int)));
+    connect(m_timelineDock->model(), SIGNAL(scaleFactorChanged()), m_player, SLOT(pause()));
     connect(m_timelineDock, SIGNAL(selected(Mlt::Producer*)), SLOT(loadProducerWidget(Mlt::Producer*)));
     connect(m_timelineDock, SIGNAL(selectionChanged()), SLOT(onTimelineSelectionChanged()));
     connect(m_timelineDock, SIGNAL(clipCopied()), SLOT(onClipCopied()));
+    connect(m_timelineDock, SIGNAL(filteredClicked()), SLOT(onFiltersDockTriggered()));
     connect(m_playlistDock, SIGNAL(addAllTimeline(Mlt::Playlist*)), SLOT(onTimelineDockTriggered()));
     connect(m_playlistDock, SIGNAL(addAllTimeline(Mlt::Playlist*)), SLOT(onAddAllToTimeline(Mlt::Playlist*)));
     connect(m_player, SIGNAL(previousSought()), m_timelineDock, SLOT(seekPreviousEdit()));
@@ -304,27 +320,54 @@ MainWindow::MainWindow()
 
     m_filterController = new FilterController(this);
     m_filtersDock = new FiltersDock(m_filterController->metadataModel(), m_filterController->attachedModel(), this);
+    m_filtersDock->setMinimumSize(400, 300);
     m_filtersDock->hide();
     addDockWidget(Qt::LeftDockWidgetArea, m_filtersDock);
+    m_filtersDock->toggleViewAction()->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_6));
     ui->menuView->addAction(m_filtersDock->toggleViewAction());
     connect(m_filtersDock, SIGNAL(currentFilterRequested(int)), m_filterController, SLOT(setCurrentFilter(int)), Qt::QueuedConnection);
     connect(m_filtersDock->toggleViewAction(), SIGNAL(triggered(bool)), this, SLOT(onFiltersDockTriggered(bool)));
     connect(ui->actionFilters, SIGNAL(triggered()), this, SLOT(onFiltersDockTriggered()));
-    connect(m_filterController, SIGNAL(currentFilterChanged(QmlFilter*, QmlMetadata*, int)), m_filtersDock, SLOT(setCurrentFilter(QmlFilter*, QmlMetadata*, int)), Qt::QueuedConnection);
-    connect(m_filterController, SIGNAL(currentFilterAboutToChange()), m_filtersDock, SLOT(clearCurrentFilter()));
+    connect(m_filterController, SIGNAL(currentFilterChanged(QmlFilter*, QmlMetadata*, int)), m_filtersDock, SLOT(setCurrentFilter(QmlFilter*, QmlMetadata*, int)));
     connect(this, SIGNAL(producerOpened()), m_filterController, SLOT(setProducer()));
     connect(m_filterController->attachedModel(), SIGNAL(changed()), SLOT(onFilterModelChanged()));
     connect(m_filtersDock, SIGNAL(changed()), SLOT(onFilterModelChanged()));
+    connect(m_filterController, SIGNAL(filterChanged(Mlt::Filter*)),
+            m_timelineDock->model(), SLOT(onFilterChanged(Mlt::Filter*)));
+    connect(m_filterController->attachedModel(), SIGNAL(addedOrRemoved(Mlt::Producer*)),
+            m_timelineDock->model(), SLOT(filterAddedOrRemoved(Mlt::Producer*)));
+    connect(&QmlApplication::singleton(), SIGNAL(filtersPasted(Mlt::Producer*)),
+            m_timelineDock->model(), SLOT(filterAddedOrRemoved(Mlt::Producer*)));
     connect(m_filterController, SIGNAL(statusChanged(QString)), this, SLOT(showStatusMessage(QString)));
-    connect(m_timelineDock, SIGNAL(fadeInChanged(int)), m_filtersDock, SLOT(setFadeInDuration(int)));
-    connect(m_timelineDock, SIGNAL(fadeOutChanged(int)), m_filtersDock, SLOT(setFadeOutDuration(int)));
+    connect(m_timelineDock, SIGNAL(fadeInChanged(int)), m_filterController, SLOT(onFadeInChanged()));
+    connect(m_timelineDock, SIGNAL(fadeOutChanged(int)), m_filterController, SLOT(onFadeOutChanged()));
     connect(m_timelineDock, SIGNAL(selected(Mlt::Producer*)), m_filterController, SLOT(setProducer(Mlt::Producer*)));
+    connect(m_player, SIGNAL(seeked(int)), m_filtersDock, SLOT(onSeeked(int)), Qt::QueuedConnection);
+    connect(m_filtersDock, SIGNAL(seeked(int)), SLOT(seekKeyframes(int)));
+    connect(MLT.videoWidget(), SIGNAL(frameDisplayed(const SharedFrame&)), m_filtersDock, SLOT(onShowFrame(const SharedFrame&)));
+    connect(m_player, SIGNAL(inChanged(int)), m_filtersDock, SIGNAL(producerInChanged(int)));
+    connect(m_player, SIGNAL(outChanged(int)), m_filtersDock, SIGNAL(producerOutChanged(int)));
+    connect(m_player, SIGNAL(inChanged(int)), m_filterController, SLOT(onFilterInChanged(int)));
+    connect(m_player, SIGNAL(outChanged(int)), m_filterController, SLOT(onFilterOutChanged(int)));
+    connect(m_timelineDock->model(), SIGNAL(filterInChanged(int, Mlt::Filter*)), m_filterController, SLOT(onFilterInChanged(int, Mlt::Filter*)));
+    connect(m_timelineDock->model(), SIGNAL(filterOutChanged(int, Mlt::Filter*)), m_filterController, SLOT(onFilterOutChanged(int, Mlt::Filter*)));
+
+    m_keyframesDock = new KeyframesDock(m_filtersDock->qmlProducer(), this);
+    m_keyframesDock->hide();
+    addDockWidget(Qt::BottomDockWidgetArea, m_keyframesDock);
+    m_keyframesDock->toggleViewAction()->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_7));
+    ui->menuView->addAction(m_keyframesDock->toggleViewAction());
+    connect(m_keyframesDock->toggleViewAction(), SIGNAL(triggered(bool)), this, SLOT(onKeyframesDockTriggered(bool)));
+    connect(ui->actionKeyframes, SIGNAL(triggered()), this, SLOT(onKeyframesDockTriggered()));
+    connect(m_filterController, SIGNAL(currentFilterChanged(QmlFilter*, QmlMetadata*, int)), m_keyframesDock, SLOT(setCurrentFilter(QmlFilter*, QmlMetadata*)));
+    connect(m_keyframesDock, SIGNAL(visibilityChanged(bool)), m_filtersDock->qmlProducer(), SLOT(remakeAudioLevels(bool)));
 
     m_historyDock = new QDockWidget(tr("History"), this);
     m_historyDock->hide();
     m_historyDock->setObjectName("historyDock");
     m_historyDock->setWindowIcon(ui->actionHistory->icon());
     m_historyDock->toggleViewAction()->setIcon(ui->actionHistory->icon());
+    m_historyDock->toggleViewAction()->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_8));
     m_historyDock->setMinimumWidth(150);
     addDockWidget(Qt::RightDockWidgetArea, m_historyDock);
     ui->menuView->addAction(m_historyDock->toggleViewAction());
@@ -341,6 +384,7 @@ MainWindow::MainWindow()
     m_encodeDock = new EncodeDock(this);
     m_encodeDock->hide();
     addDockWidget(Qt::LeftDockWidgetArea, m_encodeDock);
+    m_encodeDock->toggleViewAction()->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_9));
     ui->menuView->addAction(m_encodeDock->toggleViewAction());
     connect(this, SIGNAL(producerOpened()), m_encodeDock, SLOT(onProducerOpened()));
     connect(ui->actionEncode, SIGNAL(triggered()), this, SLOT(onEncodeTriggered()));
@@ -350,6 +394,7 @@ MainWindow::MainWindow()
     connect(m_encodeDock, SIGNAL(captureStateChanged(bool)), m_propertiesDock, SLOT(setDisabled(bool)));
     connect(m_encodeDock, SIGNAL(captureStateChanged(bool)), m_recentDock, SLOT(setDisabled(bool)));
     connect(m_encodeDock, SIGNAL(captureStateChanged(bool)), m_filtersDock, SLOT(setDisabled(bool)));
+    connect(m_encodeDock, SIGNAL(captureStateChanged(bool)), m_keyframesDock, SLOT(setDisabled(bool)));
     connect(m_encodeDock, SIGNAL(captureStateChanged(bool)), ui->actionOpen, SLOT(setDisabled(bool)));
     connect(m_encodeDock, SIGNAL(captureStateChanged(bool)), ui->actionOpenOther, SLOT(setDisabled(bool)));
     connect(m_encodeDock, SIGNAL(captureStateChanged(bool)), ui->actionExit, SLOT(setDisabled(bool)));
@@ -357,6 +402,8 @@ MainWindow::MainWindow()
     connect(m_encodeDock, SIGNAL(captureStateChanged(bool)), m_historyDock, SLOT(setDisabled(bool)));
     connect(this, SIGNAL(profileChanged()), m_encodeDock, SLOT(onProfileChanged()));
     connect(this, SIGNAL(profileChanged()), SLOT(onProfileChanged()));
+    connect(this, SIGNAL(profileChanged()), &QmlProfile::singleton(), SIGNAL(profileChanged()));
+    connect(this, SIGNAL(audioChannelsChanged()), m_encodeDock, SLOT(onAudioChannelsChanged()));
     connect(m_playlistDock->model(), SIGNAL(modified()), m_encodeDock, SLOT(onProducerOpened()));
     connect(m_timelineDock, SIGNAL(clipCopied()), m_encodeDock, SLOT(onProducerOpened()));
     m_encodeDock->onProfileChanged();
@@ -364,10 +411,11 @@ MainWindow::MainWindow()
     m_jobsDock = new JobsDock(this);
     m_jobsDock->hide();
     addDockWidget(Qt::RightDockWidgetArea, m_jobsDock);
+    m_jobsDock->toggleViewAction()->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_0));
     ui->menuView->addAction(m_jobsDock->toggleViewAction());
-    connect(&JOBS, SIGNAL(jobAdded()), m_jobsDock, SLOT(show()));
-    connect(&JOBS, SIGNAL(jobAdded()), m_jobsDock, SLOT(raise()));
+    connect(&JOBS, SIGNAL(jobAdded()), m_jobsDock, SLOT(onJobAdded()));
     connect(m_jobsDock->toggleViewAction(), SIGNAL(triggered(bool)), this, SLOT(onJobsDockTriggered(bool)));
+    connect(ui->actionJobs, SIGNAL(triggered()), this, SLOT(onJobsDockTriggered()));
 
     tabifyDockWidget(m_propertiesDock, m_playlistDock);
     tabifyDockWidget(m_playlistDock, m_filtersDock);
@@ -377,44 +425,8 @@ MainWindow::MainWindow()
     splitDockWidget(audioMeterDock, m_recentDock, Qt::Horizontal);
     tabifyDockWidget(m_recentDock, m_historyDock);
     tabifyDockWidget(m_historyDock, m_jobsDock);
+    tabifyDockWidget(m_keyframesDock, m_timelineDock);
     m_recentDock->raise();
-
-    if (Settings.meltedEnabled()) {
-        m_meltedServerDock = new MeltedServerDock(this);
-        m_meltedServerDock->hide();
-        addDockWidget(Qt::BottomDockWidgetArea, m_meltedServerDock);
-        m_meltedServerDock->toggleViewAction()->setIcon(m_meltedServerDock->windowIcon());
-        ui->menuView->addAction(m_meltedServerDock->toggleViewAction());
-
-        m_meltedPlaylistDock = new MeltedPlaylistDock(this);
-        m_meltedPlaylistDock->hide();
-        addDockWidget(Qt::BottomDockWidgetArea, m_meltedPlaylistDock);
-        splitDockWidget(m_meltedServerDock, m_meltedPlaylistDock, Qt::Horizontal);
-        m_meltedPlaylistDock->toggleViewAction()->setIcon(m_meltedPlaylistDock->windowIcon());
-        ui->menuView->addAction(m_meltedPlaylistDock->toggleViewAction());
-        connect(m_meltedServerDock, SIGNAL(connected(QString, quint16)), m_meltedPlaylistDock, SLOT(onConnected(QString,quint16)));
-        connect(m_meltedServerDock, SIGNAL(disconnected()), m_meltedPlaylistDock, SLOT(onDisconnected()));
-        connect(m_meltedServerDock, SIGNAL(unitActivated(quint8)), m_meltedPlaylistDock, SLOT(onUnitChanged(quint8)));
-        connect(m_meltedServerDock, SIGNAL(unitActivated(quint8)), this, SLOT(onMeltedUnitActivated()));
-        connect(m_meltedPlaylistDock, SIGNAL(appendRequested()), m_meltedServerDock, SLOT(onAppendRequested()));
-        connect(m_meltedServerDock, SIGNAL(append(QString,int,int)), m_meltedPlaylistDock, SLOT(onAppend(QString,int,int)));
-        connect(m_meltedPlaylistDock, SIGNAL(insertRequested(int)), m_meltedServerDock, SLOT(onInsertRequested(int)));
-        connect(m_meltedServerDock, SIGNAL(insert(QString,int,int,int)), m_meltedPlaylistDock, SLOT(onInsert(QString,int,int,int)));
-        connect(m_meltedServerDock, SIGNAL(unitOpened(quint8)), this, SLOT(onMeltedUnitOpened()));
-        connect(m_meltedServerDock, SIGNAL(unitOpened(quint8)), m_player, SLOT(onMeltedUnitOpened()));
-        connect(m_meltedServerDock->actionFastForward(), SIGNAL(triggered()), m_meltedPlaylistDock->transportControl(), SLOT(fastForward()));
-        connect(m_meltedServerDock->actionPause(), SIGNAL(triggered()), m_meltedPlaylistDock->transportControl(), SLOT(pause()));
-        connect(m_meltedServerDock->actionPlay(), SIGNAL(triggered()), m_meltedPlaylistDock->transportControl(), SLOT(play()));
-        connect(m_meltedServerDock->actionRewind(), SIGNAL(triggered()), m_meltedPlaylistDock->transportControl(), SLOT(rewind()));
-        connect(m_meltedServerDock->actionStop(), SIGNAL(triggered()), m_meltedPlaylistDock->transportControl(), SLOT(stop()));
-        connect(m_meltedServerDock, SIGNAL(openLocal(QString)), SLOT(open(QString)));
-
-        MeltedUnitsModel* unitsModel = (MeltedUnitsModel*) m_meltedServerDock->unitsModel();
-        MeltedPlaylistModel* playlistModel = (MeltedPlaylistModel*) m_meltedPlaylistDock->model();
-        connect(m_meltedServerDock, SIGNAL(connected(QString,quint16)), unitsModel, SLOT(onConnected(QString,quint16)));
-        connect(unitsModel, SIGNAL(clipIndexChanged(quint8, int)), playlistModel, SLOT(onClipIndexChanged(quint8, int)));
-        connect(unitsModel, SIGNAL(generationChanged(quint8)), playlistModel, SLOT(onGenerationChanged(quint8)));
-    }
 
     // Configure the View menu.
     ui->menuView->addSeparator();
@@ -425,9 +437,9 @@ MainWindow::MainWindow()
     connect(videoWidget, SIGNAL(dragStarted()), m_playlistDock, SLOT(onPlayerDragStarted()));
     connect(videoWidget, SIGNAL(seekTo(int)), m_player, SLOT(seek(int)));
     connect(videoWidget, SIGNAL(gpuNotSupported()), this, SLOT(onGpuNotSupported()));
+    connect(videoWidget->quickWindow(), SIGNAL(sceneGraphInitialized()), SLOT(onSceneGraphInitialized()), Qt::QueuedConnection);
     connect(videoWidget, SIGNAL(frameDisplayed(const SharedFrame&)), m_scopeController, SIGNAL(newFrame(const SharedFrame&)));
-    connect(m_filterController, SIGNAL(currentFilterChanged(QmlFilter*, QmlMetadata*, int)), videoWidget, SLOT(setCurrentFilter(QmlFilter*, QmlMetadata*)), Qt::QueuedConnection);
-    connect(m_filterController, SIGNAL(currentFilterAboutToChange()), videoWidget, SLOT(setBlankScene()));
+    connect(m_filterController, SIGNAL(currentFilterChanged(QmlFilter*, QmlMetadata*, int)), videoWidget, SLOT(setCurrentFilter(QmlFilter*, QmlMetadata*)));
 
     readWindowSettings();
     setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
@@ -448,7 +460,7 @@ MainWindow::MainWindow()
 
     connect(&m_network, SIGNAL(finished(QNetworkReply*)), SLOT(onUpgradeCheckFinished(QNetworkReply*)));
 
-    m_timelineDock->setFocusPolicy(Qt::StrongFocus);
+    QThreadPool::globalInstance()->setMaxThreadCount(qMin(4, QThreadPool::globalInstance()->maxThreadCount()));
 
     LOG_DEBUG() << "end";
 }
@@ -514,6 +526,10 @@ void MainWindow::setupSettingsMenu()
 {
     LOG_DEBUG() << "begin";
     QActionGroup* group = new QActionGroup(this);
+    group->addAction(ui->actionChannels1);
+    group->addAction(ui->actionChannels2);
+    group->addAction(ui->actionChannels6);
+    group = new QActionGroup(this);
     group->addAction(ui->actionOneField);
     group->addAction(ui->actionLinearBlend);
     group->addAction(ui->actionYadifTemporal);
@@ -533,54 +549,7 @@ void MainWindow::setupSettingsMenu()
     m_profileGroup = new QActionGroup(this);
     m_profileGroup->addAction(ui->actionProfileAutomatic);
     ui->actionProfileAutomatic->setData(QString());
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "HD 720p 50 fps", "atsc_720p_50"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "HD 720p 59.94 fps", "atsc_720p_5994"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "HD 720p 60 fps", "atsc_720p_60"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "HD 1080i 25 fps", "atsc_1080i_50"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "HD 1080i 29.97 fps", "atsc_1080i_5994"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "HD 1080p 23.98 fps", "atsc_1080p_2398"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "HD 1080p 24 fps", "atsc_1080p_24"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "HD 1080p 25 fps", "atsc_1080p_25"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "HD 1080p 29.97 fps", "atsc_1080p_2997"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "HD 1080p 30 fps", "atsc_1080p_30"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "SD NTSC", "dv_ntsc"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "SD PAL", "dv_pal"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "UHD 2160p 23.98 fps", "uhd_2160p_2398"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "UHD 2160p 24 fps", "uhd_2160p_24"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "UHD 2160p 25 fps", "uhd_2160p_25"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "UHD 2160p 29.97 fps", "uhd_2160p_2997"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "UHD 2160p 30 fps", "uhd_2160p_30"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "UHD 2160p 50 fps", "uhd_2160p_50"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "UHD 2160p 59.94 fps", "uhd_2160p_5994"));
-    ui->menuProfile->addAction(addProfile(m_profileGroup, "UHD 2160p 60 fps", "uhd_2160p_60"));
-    QMenu* menu = ui->menuProfile->addMenu(tr("Non-Broadcast"));
-    menu->addAction(addProfile(m_profileGroup, "HD 720p 23.98 fps", "atsc_720p_2398"));
-    menu->addAction(addProfile(m_profileGroup, "HD 720p 24 fps", "atsc_720p_24"));
-    menu->addAction(addProfile(m_profileGroup, "HD 720p 25 fps", "atsc_720p_25"));
-    menu->addAction(addProfile(m_profileGroup, "HD 720p 29.97 fps", "atsc_720p_2997"));
-    menu->addAction(addProfile(m_profileGroup, "HD 720p 30 fps", "atsc_720p_30"));
-    menu->addAction(addProfile(m_profileGroup, "HD 1080i 60 fps", "atsc_1080i_60"));
-    menu->addAction(addProfile(m_profileGroup, "HDV 1080i 25 fps", "hdv_1080_50i"));
-    menu->addAction(addProfile(m_profileGroup, "HDV 1080i 29.97 fps", "hdv_1080_60i"));
-    menu->addAction(addProfile(m_profileGroup, "HDV 1080p 25 fps", "hdv_1080_25p"));
-    menu->addAction(addProfile(m_profileGroup, "HDV 1080p 29.97 fps", "hdv_1080_30p"));
-    menu->addAction(addProfile(m_profileGroup, tr("DVD Widescreen NTSC"), "dv_ntsc_wide"));
-    menu->addAction(addProfile(m_profileGroup, tr("DVD Widescreen PAL"), "dv_pal_wide"));
-    menu->addAction(addProfile(m_profileGroup, "640x480 4:3 NTSC", "square_ntsc"));
-    menu->addAction(addProfile(m_profileGroup, "768x576 4:3 PAL", "square_pal"));
-    menu->addAction(addProfile(m_profileGroup, "854x480 16:9 NTSC", "square_ntsc_wide"));
-    menu->addAction(addProfile(m_profileGroup, "1024x576 16:9 PAL", "square_pal_wide"));
-    m_customProfileMenu = ui->menuProfile->addMenu(tr("Custom"));
-    m_customProfileMenu->addAction(ui->actionAddCustomProfile);
-    // Load custom profiles
-    QDir dir(Settings.appDataLocation());
-    if (dir.cd("profiles")) {
-        QStringList profiles = dir.entryList(QDir::Files | QDir::NoDotAndDotDot | QDir::Readable);
-        if (profiles.length() > 0)
-            m_customProfileMenu->addSeparator();
-        foreach (QString name, profiles)
-            m_customProfileMenu->addAction(addProfile(m_profileGroup, name, dir.filePath(name)));
-    }
+    buildVideoModeMenu(ui->menuProfile, m_customProfileMenu, m_profileGroup, ui->actionAddCustomProfile, ui->actionProfileRemove);
 
     // Add the SDI and HDMI devices to the Settings menu.
     m_externalGroup = new QActionGroup(this);
@@ -668,12 +637,18 @@ void MainWindow::setupSettingsMenu()
     a = new QAction(QLocale::languageToString(QLocale::Dutch), m_languagesGroup);
     a->setCheckable(true);
     a->setData("nl");
-    a = new QAction(QLocale::languageToString(QLocale::English), m_languagesGroup);
+    a = new QAction(QLocale::languageToString(QLocale::English).append(" (Great Britain)"), m_languagesGroup);
+    a->setCheckable(true);
+    a->setData("en_GB");
+    a = new QAction(QLocale::languageToString(QLocale::English).append(" (United States)"), m_languagesGroup);
     a->setCheckable(true);
     a->setData("en");
-    a = new QAction(QLocale::languageToString(QLocale::Greek), m_languagesGroup);
+    a = new QAction(QLocale::languageToString(QLocale::Estonian), m_languagesGroup);
     a->setCheckable(true);
-    a->setData("el");
+    a->setData("et");
+    a = new QAction(QLocale::languageToString(QLocale::Finnish), m_languagesGroup);
+    a->setCheckable(true);
+    a->setData("fi");
     a = new QAction(QLocale::languageToString(QLocale::French), m_languagesGroup);
     a->setCheckable(true);
     a->setData("fr");
@@ -683,12 +658,27 @@ void MainWindow::setupSettingsMenu()
     a = new QAction(QLocale::languageToString(QLocale::German), m_languagesGroup);
     a->setCheckable(true);
     a->setData("de");
+    a = new QAction(QLocale::languageToString(QLocale::Greek), m_languagesGroup);
+    a->setCheckable(true);
+    a->setData("el");
+    a = new QAction(QLocale::languageToString(QLocale::Hungarian), m_languagesGroup);
+    a->setCheckable(true);
+    a->setData("hu");
     a = new QAction(QLocale::languageToString(QLocale::Italian), m_languagesGroup);
     a->setCheckable(true);
     a->setData("it");
     a = new QAction(QLocale::languageToString(QLocale::Japanese), m_languagesGroup);
     a->setCheckable(true);
     a->setData("ja");
+    a = new QAction(QLocale::languageToString(QLocale::Nepali), m_languagesGroup);
+    a->setCheckable(true);
+    a->setData("ne");
+    a = new QAction(QLocale::languageToString(QLocale::NorwegianBokmal), m_languagesGroup);
+    a->setCheckable(true);
+    a->setData("nb");
+    a = new QAction(QLocale::languageToString(QLocale::NorwegianNynorsk), m_languagesGroup);
+    a->setCheckable(true);
+    a->setData("nn");
     a = new QAction(QLocale::languageToString(QLocale::Occitan), m_languagesGroup);
     a->setCheckable(true);
     a->setData("oc");
@@ -701,6 +691,9 @@ void MainWindow::setupSettingsMenu()
     a = new QAction(QLocale::languageToString(QLocale::Portuguese).append(" (Portugal)"), m_languagesGroup);
     a->setCheckable(true);
     a->setData("pt_PT");
+    a = new QAction(QLocale::languageToString(QLocale::Russian), m_languagesGroup);
+    a->setCheckable(true);
+    a->setData("ru");
     a = new QAction(QLocale::languageToString(QLocale::Slovak), m_languagesGroup);
     a->setCheckable(true);
     a->setData("sk");
@@ -710,12 +703,12 @@ void MainWindow::setupSettingsMenu()
     a = new QAction(QLocale::languageToString(QLocale::Spanish), m_languagesGroup);
     a->setCheckable(true);
     a->setData("es");
+    a = new QAction(QLocale::languageToString(QLocale::Swedish), m_languagesGroup);
+    a->setCheckable(true);
+    a->setData("sv");
     a = new QAction(QLocale::languageToString(QLocale::Turkish), m_languagesGroup);
     a->setCheckable(true);
     a->setData("tr");
-    a = new QAction(QLocale::languageToString(QLocale::Russian), m_languagesGroup);
-    a->setCheckable(true);
-    a->setData("ru");
     a = new QAction(QLocale::languageToString(QLocale::Ukrainian), m_languagesGroup);
     a->setCheckable(true);
     a->setData("uk");
@@ -747,49 +740,117 @@ void MainWindow::setupSettingsMenu()
     // Therefore, the JACK option for Shotcut is banned on Windows.
     delete ui->actionJack;
     ui->actionJack = 0;
-
+#endif
+#if !defined(Q_OS_MAC)
     // Setup the display method actions.
     if (!Settings.playerGPU()) {
         group = new QActionGroup(this);
+#if defined(Q_OS_WIN)
         ui->actionDrawingAutomatic->setData(0);
         group->addAction(ui->actionDrawingAutomatic);
         ui->actionDrawingDirectX->setData(Qt::AA_UseOpenGLES);
         group->addAction(ui->actionDrawingDirectX);
+#else
+        delete ui->actionDrawingAutomatic;
+        delete ui->actionDrawingDirectX;
+#endif
         ui->actionDrawingOpenGL->setData(Qt::AA_UseDesktopOpenGL);
         group->addAction(ui->actionDrawingOpenGL);
-        // Software rendering is not currently working.
-        delete ui->actionDrawingSoftware;
-        // ui->actionDrawingSoftware->setData(Qt::AA_UseSoftwareOpenGL);
-        // group->addAction(ui->actionDrawingSoftware);
+        ui->actionDrawingSoftware->setData(Qt::AA_UseSoftwareOpenGL);
+        group->addAction(ui->actionDrawingSoftware);
         connect(group, SIGNAL(triggered(QAction*)), this, SLOT(onDrawingMethodTriggered(QAction*)));
         switch (Settings.drawMethod()) {
         case Qt::AA_UseDesktopOpenGL:
             ui->actionDrawingOpenGL->setChecked(true);
             break;
+#if defined(Q_OS_WIN)
         case Qt::AA_UseOpenGLES:
-            delete ui->actionGPU;
-            ui->actionGPU = 0;
             ui->actionDrawingDirectX->setChecked(true);
             break;
+#endif
         case Qt::AA_UseSoftwareOpenGL:
-            delete ui->actionGPU;
-            ui->actionGPU = 0;
             ui->actionDrawingSoftware->setChecked(true);
             break;
+#if defined(Q_OS_WIN)
         default:
             ui->actionDrawingAutomatic->setChecked(true);
             break;
+#else
+        default:
+            ui->actionDrawingOpenGL->setChecked(true);
+            break;
+#endif
         }
     } else {
         // GPU mode only works with OpenGL.
         delete ui->menuDrawingMethod;
         ui->menuDrawingMethod = 0;
     }
-#else
+#else  // Q_OS_MAC
     delete ui->menuDrawingMethod;
     ui->menuDrawingMethod = 0;
 #endif
+
+    // Add custom layouts to View > Layout submenu.
+    m_layoutGroup = new QActionGroup(this);
+    connect(m_layoutGroup, SIGNAL(triggered(QAction*)), SLOT(onLayoutTriggered(QAction*)));
+    if (Settings.layouts().size() > 0) {
+        ui->menuLayout->addAction(ui->actionLayoutRemove);
+        ui->menuLayout->addSeparator();
+    }
+    foreach (QString name, Settings.layouts())
+        ui->menuLayout->addAction(addLayout(m_layoutGroup, name));
+
+    if (qApp->property("clearRecent").toBool()) {
+        ui->actionClearRecentOnExit->setVisible(false);
+        Settings.setRecent(QStringList());
+        Settings.setClearRecent(true);
+    } else {
+        ui->actionClearRecentOnExit->setChecked(Settings.clearRecent());
+    }
+
     LOG_DEBUG() << "end";
+}
+
+void MainWindow::setupOpenOtherMenu()
+{
+    // Open Other toolbar menu button
+    QScopedPointer<Mlt::Properties> mltProducers(MLT.repository()->producers());
+    QScopedPointer<Mlt::Properties> mltFilters(MLT.repository()->filters());
+    QMenu* otherMenu = new QMenu(this);
+    ui->actionOpenOther2->setMenu(otherMenu);
+
+    // populate the generators
+    if (mltProducers->get_data("color")) {
+        otherMenu->addAction(tr("Color"), this, SLOT(onOpenOtherTriggered()))->setObjectName("color");
+        if (!Settings.playerGPU() && mltProducers->get_data("qtext") && mltFilters->get_data("dynamictext"))
+            otherMenu->addAction(tr("Text"), this, SLOT(onOpenOtherTriggered()))->setObjectName("text");
+    }
+    if (mltProducers->get_data("noise"))
+        otherMenu->addAction(tr("Noise"), this, SLOT(onOpenOtherTriggered()))->setObjectName("noise");
+    if (mltProducers->get_data("frei0r.ising0r"))
+        otherMenu->addAction(tr("Ising"), this, SLOT(onOpenOtherTriggered()))->setObjectName("ising0r");
+    if (mltProducers->get_data("frei0r.lissajous0r"))
+        otherMenu->addAction(tr("Lissajous"), this, SLOT(onOpenOtherTriggered()))->setObjectName("lissajous0r");
+    if (mltProducers->get_data("frei0r.plasma"))
+        otherMenu->addAction(tr("Plasma"), this, SLOT(onOpenOtherTriggered()))->setObjectName("plasma");
+    if (mltProducers->get_data("frei0r.test_pat_B"))
+        otherMenu->addAction(tr("Color Bars"), this, SLOT(onOpenOtherTriggered()))->setObjectName("test_pat_B");
+    if (mltProducers->get_data("tone"))
+        otherMenu->addAction(tr("Audio Tone"), this, SLOT(onOpenOtherTriggered()))->setObjectName("tone");
+    if (mltProducers->get_data("count"))
+        otherMenu->addAction(tr("Count"), this, SLOT(onOpenOtherTriggered()))->setObjectName("count");
+
+#if defined(Q_OS_UNIX) && !defined(Q_OS_MAC)
+    otherMenu->addAction(tr("Video4Linux"), this, SLOT(onOpenOtherTriggered()))->setObjectName("v4l2");
+    otherMenu->addAction(tr("PulseAudio"), this, SLOT(onOpenOtherTriggered()))->setObjectName("pulse");
+    otherMenu->addAction(tr("JACK Audio"), this, SLOT(onOpenOtherTriggered()))->setObjectName("jack");
+    otherMenu->addAction(tr("ALSA Audio"), this, SLOT(onOpenOtherTriggered()))->setObjectName("alsa");
+#elif defined(Q_OS_WIN) || defined(Q_OS_MAC)
+    otherMenu->addAction(tr("Audio/Video Device"), this, SLOT(onOpenOtherTriggered()))->setObjectName("device");
+#endif
+    if (mltProducers->get_data("decklink"))
+        otherMenu->addAction(tr("SDI/HDMI"), this, SLOT(onOpenOtherTriggered()))->setObjectName("decklink");
 }
 
 QAction* MainWindow::addProfile(QActionGroup* actionGroup, const QString& desc, const QString& name)
@@ -797,6 +858,13 @@ QAction* MainWindow::addProfile(QActionGroup* actionGroup, const QString& desc, 
     QAction* action = new QAction(desc, this);
     action->setCheckable(true);
     action->setData(name);
+    actionGroup->addAction(action);
+    return action;
+}
+
+QAction*MainWindow::addLayout(QActionGroup* actionGroup, const QString& name)
+{
+    QAction* action = new QAction(name, this);
     actionGroup->addAction(action);
     return action;
 }
@@ -828,12 +896,13 @@ void MainWindow::open(Mlt::Producer* producer)
 
 bool MainWindow::isCompatibleWithGpuMode(MltXmlChecker& checker)
 {
-    if (checker.needsGPU() && !Settings.playerGPU()) {
+    if (checker.needsGPU() && !Settings.playerGPU() && Settings.playerWarnGPU()) {
         LOG_INFO() << "file uses GPU but GPU not enabled";
-        QMessageBox dialog(QMessageBox::Question,
+        QMessageBox dialog(QMessageBox::Warning,
            qApp->applicationName(),
-           tr("The file you opened uses GPU effects, but GPU processing is not enabled.\n"
-              "Do you want to enable GPU processing and restart?"),
+           tr("The file you opened uses GPU effects, but GPU effects are not enabled.\n\n"
+              "GPU effects are EXPERIMENTAL, UNSTABLE and UNSUPPORTED! Unsupported means do not report bugs about it.\n\n"
+              "Do you want to enable GPU effects and restart?"),
            QMessageBox::No |
            QMessageBox::Yes,
            this);
@@ -842,7 +911,27 @@ bool MainWindow::isCompatibleWithGpuMode(MltXmlChecker& checker)
         dialog.setEscapeButton(QMessageBox::No);
         int r = dialog.exec();
         if (r == QMessageBox::Yes) {
-            Settings.setPlayerGPU(true);
+            ui->actionGPU->setChecked(true);
+            m_exitCode = EXIT_RESTART;
+            QApplication::closeAllWindows();
+        }
+        return false;
+    }
+    else if (checker.needsCPU() && Settings.playerGPU()) {
+        LOG_INFO() << "file uses GPU incompatible filters but GPU is enabled";
+        QMessageBox dialog(QMessageBox::Question,
+           qApp->applicationName(),
+           tr("The file you opened uses CPU effects that are incompatible with GPU effects, but GPU effects are enabled.\n"
+              "Do you want to disable GPU effects and restart?"),
+           QMessageBox::No |
+           QMessageBox::Yes,
+           this);
+        dialog.setWindowModality(QmlApplication::dialogModality());
+        dialog.setDefaultButton(QMessageBox::Yes);
+        dialog.setEscapeButton(QMessageBox::No);
+        int r = dialog.exec();
+        if (r == QMessageBox::Yes) {
+            ui->actionGPU->setChecked(false);
             m_exitCode = EXIT_RESTART;
             QApplication::closeAllWindows();
         }
@@ -958,9 +1047,13 @@ void MainWindow::doAutosave()
 {
     QMutexLocker locker(&m_autosaveMutex);
     if (m_autosaveFile) {
+        bool success = false;
         if (m_autosaveFile->isOpen() || m_autosaveFile->open(QIODevice::ReadWrite)) {
-            saveXML(m_autosaveFile->fileName(), false /* without relative paths */);
-        } else {
+            m_autosaveFile->close();
+            success = saveXML(m_autosaveFile->fileName(), false /* without relative paths */);
+            m_autosaveFile->open(QIODevice::ReadWrite);
+        }
+        if (!success) {
             LOG_ERROR() << "failed to open autosave file for writing" << m_autosaveFile->fileName();
         }
     }
@@ -975,14 +1068,6 @@ void MainWindow::setFullScreen(bool isFullScreen)
         ui->actionFullscreen->setVisible(false);
 #endif
     }
-}
-
-QString MainWindow::removeFileScheme(QUrl &url)
-{
-    QString path = url.url();
-    if (url.scheme() == "file")
-        path = url.url(QUrl::PreferLocalFile);
-    return path;
 }
 
 QString MainWindow::untitledFileName() const
@@ -1038,9 +1123,60 @@ void MainWindow::setProfile(const QString &profile_name)
     emit profileChanged();
 }
 
+bool MainWindow::isSourceClipMyProject(QString resource)
+{
+    if (m_player->tabIndex() == Player::ProjectTabIndex && MLT.savedProducer() && MLT.savedProducer()->is_valid())
+        resource = QString::fromUtf8(MLT.savedProducer()->get("resource"));
+    if (QDir(resource) == QDir(fileName())) {
+        QMessageBox dialog(QMessageBox::Information,
+                           qApp->applicationName(),
+                           tr("You cannot add a project to itself!"),
+                           QMessageBox::Ok,
+                           this);
+        dialog.setDefaultButton(QMessageBox::Ok);
+        dialog.setEscapeButton(QMessageBox::Ok);
+        dialog.setWindowModality(QmlApplication::dialogModality());
+        dialog.exec();
+        return true;
+    }
+    return false;
+}
+
+bool MainWindow::keyframesDockIsVisible() const
+{
+    return m_keyframesDock && m_keyframesDock->isVisible();
+}
+
+void MainWindow::setAudioChannels(int channels)
+{
+    LOG_DEBUG() << channels;
+    MLT.videoWidget()->setProperty("audio_channels", channels);
+    MLT.setAudioChannels(channels);
+    if (channels == 1)
+        ui->actionChannels1->setChecked(true);
+    else if (channels == 2)
+        ui->actionChannels2->setChecked(true);
+    else if (channels == 6)
+        ui->actionChannels6->setChecked(true);
+    emit audioChannelsChanged();
+}
+
+void MainWindow::showSaveError()
+{
+    QMessageBox dialog(QMessageBox::Critical,
+                       qApp->applicationName(),
+                       tr("There was an error saving. Please try again."),
+                       QMessageBox::Ok,
+                       this);
+    dialog.setDefaultButton(QMessageBox::Ok);
+    dialog.setEscapeButton(QMessageBox::Ok);
+    dialog.setWindowModality(QmlApplication::dialogModality());
+    dialog.exec();
+}
+
 static void autosaveTask(MainWindow* p)
 {
-    LOG_DEBUG() << "running";
+    LOG_DEBUG_TIME();
     p->doAutosave();
 }
 
@@ -1061,6 +1197,12 @@ void MainWindow::open(QString url, const Mlt::Properties* properties)
     LOG_DEBUG() << url;
     bool modified = false;
     MltXmlChecker checker;
+    if (url.endsWith(".mlt") || url.endsWith(".xml")) {
+        if (url != untitledFileName()) {
+            showStatusMessage(tr("Opening %1").arg(url));
+            QCoreApplication::processEvents();
+        }
+    }
     if (checker.check(url)) {
         if (!isCompatibleWithGpuMode(checker))
             return;
@@ -1069,6 +1211,7 @@ void MainWindow::open(QString url, const Mlt::Properties* properties)
         // only check for a modified project when loading a project, not a simple producer
         if (!continueModified())
             return;
+        QCoreApplication::processEvents();
         // close existing project
         if (playlist())
             m_playlistDock->model()->close();
@@ -1090,16 +1233,25 @@ void MainWindow::open(QString url, const Mlt::Properties* properties)
         setWindowModified(modified);
         MLT.resetURL();
         // Return to automatic video mode if selected.
-        if (m_profileGroup->checkedAction()->data().toString().isEmpty())
+        if (m_profileGroup->checkedAction() && m_profileGroup->checkedAction()->data().toString().isEmpty())
             MLT.profile().set_explicit(false);
     }
-    if (!MLT.open(url)) {
+    if (url.endsWith(".mlt") || url.endsWith(".xml")) {
+        checker.setLocale();
+        LOG_INFO() << "decimal point" << MLT.decimalPoint();
+    }
+    if (!MLT.open(QDir::fromNativeSeparators(url))) {
         Mlt::Properties* props = const_cast<Mlt::Properties*>(properties);
         if (props && props->is_valid())
             mlt_properties_inherit(MLT.producer()->get_properties(), props->get_properties());
         m_player->setPauseAfterOpen(!MLT.isClip());
+
+        if (MLT.producer() && MLT.producer()->is_valid())
+            setAudioChannels(MLT.audioChannels());
+
         open(MLT.producer());
         if (url.startsWith(AutoSaveFile::path())) {
+            QMutexLocker locker(&m_autosaveMutex);          
             if (m_autosaveFile && m_autosaveFile->managedFileName() != untitledFileName()) {
                 m_recentDock->add(m_autosaveFile->managedFileName());
                 LOG_INFO() << m_autosaveFile->managedFileName();
@@ -1112,6 +1264,29 @@ void MainWindow::open(QString url, const Mlt::Properties* properties)
     else if (url != untitledFileName()) {
         showStatusMessage(tr("Failed to open ") + url);
         emit openFailed(url);
+    }
+}
+
+void MainWindow::openMultiple(const QStringList& paths)
+{
+    if (paths.size() > 1) {
+        QList<QUrl> urls;
+        foreach (const QString& s, paths)
+            urls << s;
+        openMultiple(urls);
+    } else if (!paths.isEmpty()) {
+        open(paths.first());
+    }
+}
+
+void MainWindow::openMultiple(const QList<QUrl>& urls)
+{
+    if (urls.size() > 1) {
+        m_multipleFiles = Util::sortedFileList(Util::expandDirectories(urls));
+        open(m_multipleFiles.first());
+    } else {
+        QUrl url = urls.first();
+        open(Util::removeFileScheme(url));
     }
 }
 
@@ -1226,6 +1401,11 @@ void MainWindow::seekTimeline(int position)
     m_player->seek(position);
 }
 
+void MainWindow::seekKeyframes(int position)
+{
+    m_player->seek(position);
+}
+
 void MainWindow::readPlayerSettings()
 {
     LOG_DEBUG() << "begin";
@@ -1235,9 +1415,12 @@ void MainWindow::readPlayerSettings()
     if (ui->actionJack)
         ui->actionJack->setChecked(Settings.playerJACK());
     if (ui->actionGPU) {
-        ui->actionGPU->setChecked(Settings.playerGPU());
         MLT.videoWidget()->setProperty("gpu", ui->actionGPU->isChecked());
+        ui->actionGPU->setChecked(Settings.playerGPU());
     }
+
+    setAudioChannels(Settings.playerAudioChannels());
+
     QString deinterlacer = Settings.playerDeinterlacer();
     QString interpolation = Settings.playerInterpolation();
 
@@ -1310,8 +1493,12 @@ void MainWindow::readWindowSettings()
     Settings.setWindowGeometryDefault(saveGeometry());
     Settings.setWindowStateDefault(saveState());
     Settings.sync();
-    restoreGeometry(Settings.windowGeometry());
-    restoreState(Settings.windowState());
+    if (!Settings.windowGeometry().isEmpty()) {
+        restoreGeometry(Settings.windowGeometry());
+        restoreState(Settings.windowState());
+    } else {
+        on_actionLayoutTimeline_triggered();
+    }
     LOG_DEBUG() << "end";
 }
 
@@ -1321,6 +1508,7 @@ void MainWindow::writeSettings()
     if (isFullScreen())
         showNormal();
 #endif
+    Settings.setPlayerGPU(ui->actionGPU->isChecked());
     Settings.setWindowGeometry(saveGeometry());
     Settings.setWindowState(saveState());
     Settings.sync();
@@ -1329,7 +1517,8 @@ void MainWindow::writeSettings()
 void MainWindow::configureVideoWidget()
 {
     LOG_DEBUG() << "begin";
-    setProfile(m_profileGroup->checkedAction()->data().toString());
+    if (m_profileGroup->checkedAction())
+        setProfile(m_profileGroup->checkedAction()->data().toString());
     MLT.videoWidget()->setProperty("realtime", ui->actionRealtime->isChecked());
     bool ok = false;
     m_externalGroup->checkedAction()->data().toInt(&ok);
@@ -1340,6 +1529,12 @@ void MainWindow::configureVideoWidget()
         MLT.videoWidget()->setProperty("progressive", MLT.profile().progressive());
         ui->actionProgressive->setEnabled(false);
     }
+    if (ui->actionChannels1->isChecked())
+        setAudioChannels(1);
+    else if (ui->actionChannels2->isChecked())
+        setAudioChannels(2);
+    else
+        setAudioChannels(6);
     if (ui->actionOneField->isChecked())
         MLT.videoWidget()->setProperty("deinterlace_method", "onefield");
     else if (ui->actionLinearBlend->isChecked())
@@ -1363,14 +1558,18 @@ void MainWindow::configureVideoWidget()
 
 void MainWindow::setCurrentFile(const QString &filename)
 {
-    QString shownName = "Untitled";
+    QString shownName = tr("Untitled");
     if (filename == untitledFileName())
         m_currentFile.clear();
     else
         m_currentFile = filename;
     if (!m_currentFile.isEmpty())
         shownName = QFileInfo(m_currentFile).fileName();
-    setWindowTitle(tr("%1[*] - %2").arg(shownName).arg(qApp->applicationName()));
+#ifdef Q_OS_MAC
+    setWindowTitle(QString("%1 - %2").arg(shownName).arg(qApp->applicationName()));
+#else
+    setWindowTitle(QString("%1[*] - %2").arg(shownName).arg(qApp->applicationName()));
+#endif
 }
 
 void MainWindow::on_actionAbout_Shotcut_triggered()
@@ -1378,17 +1577,17 @@ void MainWindow::on_actionAbout_Shotcut_triggered()
     QMessageBox::about(this, tr("About Shotcut"),
              tr("<h1>Shotcut version %1</h1>"
                 "<p><a href=\"https://www.shotcut.org/\">Shotcut</a> is a free, open source, cross platform video editor.</p>"
-                "<small><p>Copyright &copy; 2011-2016 <a href=\"https://www.meltytech.com/\">Meltytech</a>, LLC</p>"
-                "<p>Licensed under the <a href=\"http://www.gnu.org/licenses/gpl.html\">GNU General Public License v3.0</a></p>"
+                "<small><p>Copyright &copy; 2011-2019 <a href=\"https://www.meltytech.com/\">Meltytech</a>, LLC</p>"
+                "<p>Licensed under the <a href=\"https://www.gnu.org/licenses/gpl.html\">GNU General Public License v3.0</a></p>"
                 "<p>This program proudly uses the following projects:<ul>"
-                "<li><a href=\"http://www.qt-project.org/\">Qt</a> application and UI framework</li>"
-                "<li><a href=\"http://www.mltframework.org/\">MLT</a> multimedia authoring framework</li>"
-                "<li><a href=\"http://www.ffmpeg.org/\">FFmpeg</a> multimedia format and codec libraries</li>"
-                "<li><a href=\"http://www.videolan.org/developers/x264.html\">x264</a> H.264 encoder</li>"
-                "<li><a href=\"http://www.webmproject.org/\">WebM</a> VP8 and VP9 encoders</li>"
+                "<li><a href=\"https://www.qt.io/\">Qt</a> application and UI framework</li>"
+                "<li><a href=\"https://www.mltframework.org/\">MLT</a> multimedia authoring framework</li>"
+                "<li><a href=\"https://www.ffmpeg.org/\">FFmpeg</a> multimedia format and codec libraries</li>"
+                "<li><a href=\"https://www.videolan.org/developers/x264.html\">x264</a> H.264 encoder</li>"
+                "<li><a href=\"https://www.webmproject.org/\">WebM</a> VP8 and VP9 encoders</li>"
                 "<li><a href=\"http://lame.sourceforge.net/\">LAME</a> MP3 encoder</li>"
-                "<li><a href=\"http://www.dyne.org/software/frei0r/\">Frei0r</a> video plugins</li>"
-                "<li><a href=\"http://www.ladspa.org/\">LADSPA</a> audio plugins</li>"
+                "<li><a href=\"https://www.dyne.org/software/frei0r/\">Frei0r</a> video plugins</li>"
+                "<li><a href=\"https://www.ladspa.org/\">LADSPA</a> audio plugins</li>"
                 "<li><a href=\"http://www.defaulticon.com/\">DefaultIcon</a> icon collection by <a href=\"http://www.interactivemania.com/\">interactivemania</a></li>"
                 "<li><a href=\"http://www.oxygen-icons.org/\">Oxygen</a> icon collection</li>"
                 "</ul></p>"
@@ -1404,7 +1603,6 @@ void MainWindow::on_actionAbout_Shotcut_triggered()
 void MainWindow::keyPressEvent(QKeyEvent* event)
 {
     bool handled = true;
-
 
     switch (event->key()) {
     case Qt::Key_Home:
@@ -1479,7 +1677,7 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
         }
         break;
     case Qt::Key_C:
-        if (event->modifiers() == Qt::ShiftModifier) {
+        if (event->modifiers() == Qt::ShiftModifier && m_playlistDock->model()->rowCount() > 0) {
             m_playlistDock->show();
             m_playlistDock->raise();
             if (m_playlistDock->position() >= 0)
@@ -1510,7 +1708,7 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
         if (m_isKKeyPressed)
             m_player->seek(m_player->position() - 1);
         else
-            m_player->rewind();
+            m_player->rewind(false);
         break;
     case Qt::Key_K:
             m_player->pause();
@@ -1530,7 +1728,7 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
         else if (m_isKKeyPressed)
             m_player->seek(m_player->position() + 1);
         else
-            m_player->fastForward();
+            m_player->fastForward(false);
         break;
     case Qt::Key_M:
 #ifdef Q_OS_MAC
@@ -1542,10 +1740,33 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
             m_timelineDock->toggleTrackMute(m_timelineDock->currentTrack());
         break;
     case Qt::Key_I:
-        setInToCurrent(event->modifiers() & Qt::ShiftModifier);
+        if (event->modifiers() == Qt::ControlModifier) {
+            m_timelineDock->show();
+            m_timelineDock->raise();
+            m_timelineDock->addVideoTrack();
+        } else {
+            setInToCurrent(event->modifiers() & Qt::ShiftModifier);
+        }
         break;
     case Qt::Key_O:
         setOutToCurrent(event->modifiers() & Qt::ShiftModifier);
+        break;
+    case Qt::Key_P:
+        if (event->modifiers() == Qt::ControlModifier) {
+            Settings.setTimelineSnap(!Settings.timelineSnap());
+        }
+        break;
+    case Qt::Key_R:
+        if (event->modifiers() & Qt::ControlModifier) {
+            if (event->modifiers() & Qt::AltModifier) {
+                Settings.setTimelineRippleAllTracks(!Settings.timelineRippleAllTracks());
+            } else if (event->modifiers() & Qt::ShiftModifier) {
+                Settings.setTimelineRippleAllTracks(!Settings.timelineRipple());
+                Settings.setTimelineRipple(!Settings.timelineRipple());
+            } else {
+                Settings.setTimelineRipple(!Settings.timelineRipple());
+            }
+        }
         break;
     case Qt::Key_S:
         if (isMultitrackValid())
@@ -1569,12 +1790,24 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
             m_timelineDock->insert(-1);
         }
         break;
-    case Qt::Key_B: // Avid Overwrite
-        if (event->modifiers() == Qt::ShiftModifier) {
-            m_playlistDock->show();
-            m_playlistDock->raise();
-            m_playlistDock->on_actionUpdate_triggered();
+    case Qt::Key_B:
+        if (event->modifiers() & Qt::ControlModifier && event->modifiers() & Qt::AltModifier) {
+            // Toggle track blending.
+            int trackIndex = m_timelineDock->currentTrack();
+            bool isBottomVideo = m_timelineDock->model()->data(m_timelineDock->model()->index(trackIndex), MultitrackModel::IsBottomVideoRole).toBool();
+            if (!isBottomVideo) {
+                bool isComposite = m_timelineDock->model()->data(m_timelineDock->model()->index(trackIndex), MultitrackModel::IsCompositeRole).toBool();
+                m_timelineDock->setTrackComposite(trackIndex, !isComposite);
+            }
+        } else if (event->modifiers() == Qt::ShiftModifier) {
+            if (m_playlistDock->model()->rowCount() > 0) {
+                // Update playlist item.
+                m_playlistDock->show();
+                m_playlistDock->raise();
+                m_playlistDock->on_actionUpdate_triggered();
+            }
         } else {
+            // Overwrite on timeline.
             m_timelineDock->show();
             m_timelineDock->raise();
             m_timelineDock->overwrite(-1);
@@ -1598,7 +1831,7 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
         }
         break;
     case Qt::Key_Up:
-        if (m_playlistDock->isVisible() && event->modifiers() & Qt::AltModifier) {
+        if (m_playlistDock->isVisible() && event->modifiers() & Qt::AltModifier && m_playlistDock->model()->rowCount() > 0) {
             m_playlistDock->raise();
             m_playlistDock->decrementIndex();
             m_playlistDock->on_actionOpen_triggered();
@@ -1618,7 +1851,7 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
                 m_timelineDock->setSelection(QList<int>() << newClipIndex);
             }
 
-        } else if (m_playlistDock->isVisible()) {
+        } else if (m_playlistDock->isVisible() && m_playlistDock->model()->rowCount() > 0) {
             m_playlistDock->raise();
             if (event->modifiers() & Qt::ControlModifier)
                 m_playlistDock->moveClipUp();
@@ -1626,7 +1859,7 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
         }
         break;
     case Qt::Key_Down:
-        if (m_playlistDock->isVisible() && event->modifiers() & Qt::AltModifier) {
+        if (m_playlistDock->isVisible() && event->modifiers() & Qt::AltModifier && m_playlistDock->model()->rowCount() > 0) {
             m_playlistDock->raise();
             m_playlistDock->incrementIndex();
             m_playlistDock->on_actionOpen_triggered();
@@ -1646,7 +1879,7 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
                 m_timelineDock->setSelection(QList<int>() << newClipIndex);
             }
 
-        } else if (m_playlistDock->isVisible()) {
+        } else if (m_playlistDock->isVisible() && m_playlistDock->model()->rowCount() > 0) {
             m_playlistDock->raise();
             if (event->modifiers() & Qt::ControlModifier)
                 m_playlistDock->moveClipDown();
@@ -1662,22 +1895,26 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
     case Qt::Key_7:
     case Qt::Key_8:
     case Qt::Key_9:
-        if (m_playlistDock->isVisible()) {
+        if (!event->modifiers() && m_playlistDock->isVisible() && m_playlistDock->model()->rowCount() > 0) {
             m_playlistDock->raise();
             m_playlistDock->setIndex(event->key() - Qt::Key_1);
         }
         break;
     case Qt::Key_0:
-        if (m_playlistDock->isVisible()) {
-            m_playlistDock->raise();
-            m_playlistDock->setIndex(9);
+        if (!event->modifiers() ) {
+            if (m_timelineDock->isVisible()) {
+                m_timelineDock->resetZoom();
+            } else if (m_playlistDock->isVisible() && m_playlistDock->model()->rowCount() > 0) {
+                m_playlistDock->raise();
+                m_playlistDock->setIndex(9);
+            }
         }
-        else if (m_timelineDock->isVisible()) {
-            m_timelineDock->resetZoom();
+        if (m_keyframesDock->isVisible() && (event->modifiers() & Qt::AltModifier)) {
+            emit m_keyframesDock->resetZoom();
         }
         break;
     case Qt::Key_X: // Avid Extract
-        if (event->modifiers() == Qt::ShiftModifier) {
+        if (event->modifiers() == Qt::ShiftModifier && m_playlistDock->model()->rowCount() > 0) {
             m_playlistDock->show();
             m_playlistDock->raise();
             m_playlistDock->on_removeButton_clicked();
@@ -1696,21 +1933,14 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
                 m_timelineDock->removeSelection();
             else
                 m_timelineDock->liftSelection();
-        } else {
+        } else if (m_playlistDock->model()->rowCount() > 0) {
             m_playlistDock->show();
             m_playlistDock->raise();
             m_playlistDock->on_removeButton_clicked();
         }
         break;
-    case Qt::Key_Y:
-        if (event->modifiers() == Qt::ControlModifier) {
-            m_timelineDock->show();
-            m_timelineDock->raise();
-            m_timelineDock->addVideoTrack();
-        }
-        break;
     case Qt::Key_Z: // Avid Lift
-        if (event->modifiers() == Qt::ShiftModifier) {
+        if (event->modifiers() == Qt::ShiftModifier && m_playlistDock->model()->rowCount() > 0) {
             m_playlistDock->show();
             m_playlistDock->raise();
             m_playlistDock->on_removeButton_clicked();
@@ -1721,20 +1951,26 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
         }
         break;
     case Qt::Key_Minus:
-        if (m_timelineDock->isVisible()) {
+        if (m_timelineDock->isVisible() && !(event->modifiers() & Qt::AltModifier)) {
             if (event->modifiers() & Qt::ControlModifier)
                 m_timelineDock->makeTracksShorter();
             else
                 m_timelineDock->zoomOut();
         }
+        if (m_keyframesDock->isVisible() && (event->modifiers() & Qt::AltModifier)) {
+            emit m_keyframesDock->zoomOut();
+        }
         break;
     case Qt::Key_Equal:
     case Qt::Key_Plus:
-        if (m_timelineDock->isVisible()) {
+        if (m_timelineDock->isVisible() && !(event->modifiers() & Qt::AltModifier)) {
             if (event->modifiers() & Qt::ControlModifier)
                 m_timelineDock->makeTracksTaller();
             else
                 m_timelineDock->zoomIn();
+        }
+        if (m_keyframesDock->isVisible() && (event->modifiers() & Qt::AltModifier)) {
+            emit m_keyframesDock->zoomIn();
         }
         break;
     case Qt::Key_Enter: // Seek to current playlist item
@@ -1748,6 +1984,7 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
         break;
     case Qt::Key_F5:
         m_timelineDock->model()->reload();
+        m_keyframesDock->model().reload();
         break;
     case Qt::Key_F1:
         LOG_DEBUG() << "Current focusWidget:" << QApplication::focusWidget();
@@ -1755,24 +1992,167 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
         LOG_DEBUG() << "Current focusWindow:" << QApplication::focusWindow();
         break;
     default:
+        handled = false;
         break;
     }
 
-    if (!handled)
+    if (handled)
+        event->setAccepted(handled);
+    else
         QMainWindow::keyPressEvent(event);
 }
 
 void MainWindow::keyReleaseEvent(QKeyEvent* event)
 {
-    if (event->key() == Qt::Key_K)
+    if (event->key() == Qt::Key_K) {
         m_isKKeyPressed = false;
-    else
+        event->setAccepted(true);
+    } else {
         QMainWindow::keyReleaseEvent(event);
+    }
 }
 
 void MainWindow::hideSetDataDirectory()
 {
     delete ui->actionAppDataSet;
+}
+
+QAction *MainWindow::actionAddCustomProfile() const
+{
+    return ui->actionAddCustomProfile;
+}
+
+QAction *MainWindow::actionProfileRemove() const
+{
+    return ui->actionProfileRemove;
+}
+
+void MainWindow::buildVideoModeMenu(QMenu* topMenu, QMenu*& customMenu, QActionGroup* group, QAction* addAction, QAction* removeAction)
+{
+    topMenu->addAction(addProfile(group, "HD 720p 50 fps", "atsc_720p_50"));
+    topMenu->addAction(addProfile(group, "HD 720p 59.94 fps", "atsc_720p_5994"));
+    topMenu->addAction(addProfile(group, "HD 720p 60 fps", "atsc_720p_60"));
+    topMenu->addAction(addProfile(group, "HD 1080i 25 fps", "atsc_1080i_50"));
+    topMenu->addAction(addProfile(group, "HD 1080i 29.97 fps", "atsc_1080i_5994"));
+    topMenu->addAction(addProfile(group, "HD 1080p 23.98 fps", "atsc_1080p_2398"));
+    topMenu->addAction(addProfile(group, "HD 1080p 24 fps", "atsc_1080p_24"));
+    topMenu->addAction(addProfile(group, "HD 1080p 25 fps", "atsc_1080p_25"));
+    topMenu->addAction(addProfile(group, "HD 1080p 29.97 fps", "atsc_1080p_2997"));
+    topMenu->addAction(addProfile(group, "HD 1080p 30 fps", "atsc_1080p_30"));
+    topMenu->addAction(addProfile(group, "HD 1080p 59.94 fps", "atsc_1080p_5994"));
+    topMenu->addAction(addProfile(group, "HD 1080p 60 fps", "atsc_1080p_60"));
+    topMenu->addAction(addProfile(group, "SD NTSC", "dv_ntsc"));
+    topMenu->addAction(addProfile(group, "SD PAL", "dv_pal"));
+    topMenu->addAction(addProfile(group, "UHD 2160p 23.98 fps", "uhd_2160p_2398"));
+    topMenu->addAction(addProfile(group, "UHD 2160p 24 fps", "uhd_2160p_24"));
+    topMenu->addAction(addProfile(group, "UHD 2160p 25 fps", "uhd_2160p_25"));
+    topMenu->addAction(addProfile(group, "UHD 2160p 29.97 fps", "uhd_2160p_2997"));
+    topMenu->addAction(addProfile(group, "UHD 2160p 30 fps", "uhd_2160p_30"));
+    topMenu->addAction(addProfile(group, "UHD 2160p 50 fps", "uhd_2160p_50"));
+    topMenu->addAction(addProfile(group, "UHD 2160p 59.94 fps", "uhd_2160p_5994"));
+    topMenu->addAction(addProfile(group, "UHD 2160p 60 fps", "uhd_2160p_60"));
+    QMenu* menu = topMenu->addMenu(tr("Non-Broadcast"));
+    menu->addAction(addProfile(group, "640x480 4:3 NTSC", "square_ntsc"));
+    menu->addAction(addProfile(group, "768x576 4:3 PAL", "square_pal"));
+    menu->addAction(addProfile(group, "854x480 16:9 NTSC", "square_ntsc_wide"));
+    menu->addAction(addProfile(group, "1024x576 16:9 PAL", "square_pal_wide"));
+    menu->addAction(addProfile(group, tr("DVD Widescreen NTSC"), "dv_ntsc_wide"));
+    menu->addAction(addProfile(group, tr("DVD Widescreen PAL"), "dv_pal_wide"));
+    menu->addAction(addProfile(group, "HD 720p 23.98 fps", "atsc_720p_2398"));
+    menu->addAction(addProfile(group, "HD 720p 24 fps", "atsc_720p_24"));
+    menu->addAction(addProfile(group, "HD 720p 25 fps", "atsc_720p_25"));
+    menu->addAction(addProfile(group, "HD 720p 29.97 fps", "atsc_720p_2997"));
+    menu->addAction(addProfile(group, "HD 720p 30 fps", "atsc_720p_30"));
+    menu->addAction(addProfile(group, "HD 1080i 60 fps", "atsc_1080i_60"));
+    menu->addAction(addProfile(group, "HDV 1080i 25 fps", "hdv_1080_50i"));
+    menu->addAction(addProfile(group, "HDV 1080i 29.97 fps", "hdv_1080_60i"));
+    menu->addAction(addProfile(group, "HDV 1080p 25 fps", "hdv_1080_25p"));
+    menu->addAction(addProfile(group, "HDV 1080p 29.97 fps", "hdv_1080_30p"));
+    menu->addAction(addProfile(group, tr("Square 1080p 30 fps"), "square_1080p_30"));
+    menu->addAction(addProfile(group, tr("Square 1080p 60 fps"), "square_1080p_60"));
+    menu->addAction(addProfile(group, tr("Vertical HD 30 fps"), "vertical_hd_30"));
+    menu->addAction(addProfile(group, tr("Vertical HD 60 fps"), "vertical_hd_60"));
+    customMenu = topMenu->addMenu(tr("Custom"));
+    customMenu->addAction(addAction);
+    // Load custom profiles
+    QDir dir(Settings.appDataLocation());
+    if (dir.cd("profiles")) {
+        QStringList profiles = dir.entryList(QDir::Files | QDir::NoDotAndDotDot | QDir::Readable);
+        if (profiles.length() > 0) {
+            customMenu->addAction(removeAction);
+            customMenu->addSeparator();
+        }
+        foreach (QString name, profiles)
+            customMenu->addAction(addProfile(group, name, dir.filePath(name)));
+    }
+}
+
+void MainWindow::newProject(const QString &filename, bool isProjectFolder)
+{
+    if (isProjectFolder) {
+        QFileInfo info(filename);
+        MLT.setProjectFolder(info.absolutePath());
+    }
+    if (saveXML(filename)) {
+        QMutexLocker locker(&m_autosaveMutex);
+        if (m_autosaveFile)
+            m_autosaveFile->changeManagedFile(filename);
+        else
+            m_autosaveFile.reset(new AutoSaveFile(filename));
+        setCurrentFile(filename);
+        setWindowModified(false);
+        if (MLT.producer())
+            showStatusMessage(tr("Saved %1").arg(m_currentFile));
+        m_undoStack->setClean();
+        m_recentDock->add(filename);
+    } else {
+        showSaveError();
+    }
+}
+
+void MainWindow::addCustomProfile(const QString &name, QMenu *menu, QAction *action, QActionGroup *group)
+{
+    // Add new profile to the menu.
+    QDir dir(Settings.appDataLocation());
+    if (dir.cd("profiles")) {
+        QStringList profiles = dir.entryList(QDir::Files | QDir::NoDotAndDotDot | QDir::Readable);
+        if (profiles.length() == 1) {
+            menu->addAction(action);
+            menu->addSeparator();
+        }
+        action = addProfile(group, name, dir.filePath(name));
+        action->setChecked(true);
+        menu->addAction(action);
+        Settings.setPlayerProfile(dir.filePath(name));
+        Settings.sync();
+    }
+}
+
+void MainWindow::removeCustomProfiles(const QStringList &profiles, QDir& dir, QMenu *menu, QAction *action)
+{
+    foreach(const QString& profile, profiles) {
+        // Remove the file.
+        dir.remove(profile);
+        // Locate the menu item.
+        foreach (QAction* a, menu->actions()) {
+            if (a->text() == profile) {
+                // Remove the menu item.
+                delete a;
+                break;
+            }
+        }
+    }
+    // If no more custom video modes.
+    if (menu->actions().size() == 3) {
+        // Remove the Remove action and separator.
+        menu->removeAction(action);
+        foreach (QAction* a, menu->actions()) {
+            if (a->isSeparator()) {
+                delete a;
+                break;
+            }
+        }
+    }
 }
 
 // Drag-n-drop events
@@ -1787,7 +2167,7 @@ bool MainWindow::eventFilter(QObject* target, QEvent* event)
         return true;
     } else if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) {
         QQuickWidget * focusedQuickWidget = qobject_cast<QQuickWidget*>(qApp->focusWidget());
-        if (focusedQuickWidget) {
+        if (focusedQuickWidget && focusedQuickWidget->quickWindow()->activeFocusItem()) {
             event->accept();
             focusedQuickWidget->quickWindow()->sendEvent(focusedQuickWidget->quickWindow()->activeFocusItem(), event);
             QWidget * w = focusedQuickWidget->parentWidget();
@@ -1828,14 +2208,7 @@ void MainWindow::dropEvent(QDropEvent *event)
         }
     }
     else if (mimeData->hasUrls()) {
-        if (mimeData->urls().length() > 1) {
-            foreach (QUrl url, mimeData->urls()) {
-                QString path = removeFileScheme(url);
-                m_multipleFiles.append(path);
-            }
-        }
-        QString path = removeFileScheme(mimeData->urls().first());
-        open(path);
+        openMultiple(mimeData->urls());
         event->acceptProposedAction();
     }
     else if (mimeData->hasFormat(Mlt::XmlMimeType )) {
@@ -1848,12 +2221,30 @@ void MainWindow::closeEvent(QCloseEvent* event)
 {
     if (continueJobsRunning() && continueModified()) {
         if (!m_htmlEditor || m_htmlEditor->close()) {
+            LOG_DEBUG() << "begin";
             writeSettings();
+            if (m_exitCode == EXIT_SUCCESS) {
+                MLT.stop();
+            } else {
+                if (multitrack())
+                    m_timelineDock->model()->close();
+                if (playlist())
+                    m_playlistDock->model()->close();
+                else
+                    onMultitrackClosed();
+            }
             QThreadPool::globalInstance()->clear();
             AudioLevelsTask::closeAll();
             event->accept();
             emit aboutToShutDown();
-            QApplication::exit(m_exitCode);
+            if (m_exitCode == EXIT_SUCCESS) {
+                QApplication::quit();
+                LOG_DEBUG() << "end";
+                ::_Exit(0);
+            } else {
+                QApplication::exit(m_exitCode);
+                LOG_DEBUG() << "end";
+            }
             return;
         }
     }
@@ -1869,12 +2260,17 @@ void MainWindow::showEvent(QShowEvent* event)
     on_actionShowTitleBars_triggered(Settings.showTitleBars());
     ui->actionShowToolbar->setChecked(Settings.showToolBar());
     on_actionShowToolbar_triggered(Settings.showToolBar());
+    ui->actionShowTextUnderIcons->setChecked(Settings.textUnderIcons());
+    on_actionShowTextUnderIcons_toggled(Settings.textUnderIcons());
+    ui->actionShowSmallIcons->setChecked(Settings.smallIcons());
+    on_actionShowSmallIcons_toggled(Settings.smallIcons());
 
     windowHandle()->installEventFilter(this);
 
-    QAction* action = new QAction(tr("Click here to check for a new version of Shotcut."), 0);
-    connect(action, SIGNAL(triggered(bool)), SLOT(on_actionUpgrade_triggered()));
-    showStatusMessage(action, 10 /* seconds */);
+#ifndef SHOTCUT_NOUPGRADE
+    if (!Settings.noUpgrade() && !qApp->property("noupgrade").toBool())
+        QTimer::singleShot(0, this, SLOT(showUpgradePrompt()));
+#endif
 }
 
 void MainWindow::on_actionOpenOther_triggered()
@@ -1892,11 +2288,8 @@ void MainWindow::on_actionOpenOther_triggered()
 
 void MainWindow::onProducerOpened()
 {
-    if (m_meltedServerDock)
-        m_meltedServerDock->disconnect(SIGNAL(positionUpdated(int,double,int,int,int,bool)));
-
     QWidget* w = loadProducerWidget(MLT.producer());
-    if (w && !MLT.producer()->get_int(kMultitrackItemProperty)) {
+    if (w && !MLT.producer()->get(kMultitrackItemProperty)) {
         if (-1 != w->metaObject()->indexOfSignal("producerReopened()"))
             connect(w, SIGNAL(producerReopened()), m_player, SLOT(onProducerOpened()));
     }
@@ -1921,7 +2314,7 @@ void MainWindow::onProducerOpened()
             m_timelineDock->raise();
             m_player->enableTab(Player::ProjectTabIndex);
             m_player->switchToTab(Player::ProjectTabIndex);
-            m_timelineDock->setSelection(QList<int>() << 0);
+            m_timelineDock->selectMultitrack();
         }
     }
     if (MLT.isClip()) {
@@ -1930,6 +2323,7 @@ void MainWindow::onProducerOpened()
         getHash(*MLT.producer());
         ui->actionPaste->setEnabled(true);
     }
+    QMutexLocker locker(&m_autosaveMutex);
     if (m_autosaveFile)
         setCurrentFile(m_autosaveFile->managedFileName());
     else if (!MLT.URL().isEmpty())
@@ -1950,10 +2344,18 @@ bool MainWindow::on_actionSave_triggered()
     if (m_currentFile.isEmpty()) {
         return on_actionSave_As_triggered();
     } else {
-        saveXML(m_currentFile);
+        if (Util::warnIfNotWritable(m_currentFile, this, tr("Save XML")))
+            return false;
+        bool success = saveXML(m_currentFile);
+        QMutexLocker locker(&m_autosaveMutex);
+        m_autosaveFile.reset(new AutoSaveFile(m_currentFile));
         setCurrentFile(m_currentFile);
         setWindowModified(false);
-        showStatusMessage(tr("Saved %1").arg(m_currentFile));
+        if (success) {
+            showStatusMessage(tr("Saved %1").arg(m_currentFile));
+        } else {
+            showSaveError();
+        }
         m_undoStack->setClean();
         return true;
     }
@@ -1961,29 +2363,22 @@ bool MainWindow::on_actionSave_triggered()
 
 bool MainWindow::on_actionSave_As_triggered()
 {
-    if (!MLT.producer())
-        return false;
     QString path = Settings.savePath();
-    path.append("/.mlt");
-    QString filename = QFileDialog::getSaveFileName(this, tr("Save XML"), path, tr("MLT XML (*.mlt)"));
+    if (!m_currentFile.isEmpty())
+        path = m_currentFile;
+    QString caption = tr("Save XML");
+    QString filename = QFileDialog::getSaveFileName(this, caption, path, tr("MLT XML (*.mlt)"));
     if (!filename.isEmpty()) {
         QFileInfo fi(filename);
         Settings.setSavePath(fi.path());
         if (fi.suffix() != "mlt")
             filename += ".mlt";
-        saveXML(filename);
-        if (m_autosaveFile)
-            m_autosaveFile->changeManagedFile(filename);
-        else
-            m_autosaveFile.reset(new AutoSaveFile(filename));
-        setCurrentFile(filename);
-        setWindowModified(false);
-        if (MLT.producer())
-            showStatusMessage(tr("Saved %1").arg(m_currentFile));
-        m_undoStack->setClean();
-        m_recentDock->add(filename);
+
+        if (Util::warnIfNotWritable(filename, this, caption))
+            return false;
+        newProject(filename);
     }
-    return filename.isEmpty();
+    return !filename.isEmpty();
 }
 
 bool MainWindow::continueModified()
@@ -2002,10 +2397,12 @@ bool MainWindow::continueModified()
         dialog.setEscapeButton(QMessageBox::Cancel);
         int r = dialog.exec();
         if (r == QMessageBox::Yes || r == QMessageBox::No) {
-            QMutexLocker locker(&m_autosaveMutex);
-            m_autosaveFile.reset();
-            if (r == QMessageBox::Yes)
+            if (r == QMessageBox::Yes) {
                 return on_actionSave_triggered();
+            } else {
+                QMutexLocker locker(&m_autosaveMutex);
+                m_autosaveFile.reset();
+            }
         } else if (r == QMessageBox::Cancel) {
             return false;
         }
@@ -2122,6 +2519,14 @@ void MainWindow::onFiltersDockTriggered(bool checked)
     }
 }
 
+void MainWindow::onKeyframesDockTriggered(bool checked)
+{
+    if (checked) {
+        m_keyframesDock->show();
+        m_keyframesDock->raise();
+    }
+}
+
 void MainWindow::onPlaylistCreated()
 {
     if (!playlist() || playlist()->count() == 0) return;
@@ -2142,11 +2547,14 @@ void MainWindow::onPlaylistCleared()
 
 void MainWindow::onPlaylistClosed()
 {
+    closeProducer();
     setProfile(Settings.playerProfile());
+    setAudioChannels(Settings.playerAudioChannels());
     setCurrentFile("");
     setWindowModified(false);
     m_undoStack->clear();
     MLT.resetURL();
+    QMutexLocker locker(&m_autosaveMutex);
     m_autosaveFile.reset(new AutoSaveFile(untitledFileName()));
     if (!isMultitrackValid())
         m_player->enableTab(Player::ProjectTabIndex, false);
@@ -2168,12 +2576,14 @@ void MainWindow::onMultitrackCreated()
 
 void MainWindow::onMultitrackClosed()
 {
-    setProfile(Settings.playerProfile());
+    setAudioChannels(Settings.playerAudioChannels());
     closeProducer();
+    setProfile(Settings.playerProfile());
     setCurrentFile("");
     setWindowModified(false);
     m_undoStack->clear();
     MLT.resetURL();
+    QMutexLocker locker(&m_autosaveMutex);
     m_autosaveFile.reset(new AutoSaveFile(untitledFileName()));
     if (!playlist() || playlist()->count() == 0)
         m_player->enableTab(Player::ProjectTabIndex, false);
@@ -2182,6 +2592,25 @@ void MainWindow::onMultitrackClosed()
 void MainWindow::onMultitrackModified()
 {
     setWindowModified(true);
+
+    // Reflect this playlist info onto the producer for keyframes dock.
+    if (!m_timelineDock->selection().isEmpty()) {
+        int clipIndex = m_timelineDock->selection().first();
+        QScopedPointer<Mlt::ClipInfo> info(m_timelineDock->getClipInfo(m_timelineDock->currentTrack(), clipIndex));
+        if (info && info->producer && info->producer->is_valid()) {
+            info->producer->set(kPlaylistStartProperty, info->start);
+            if (info->frame_in != info->producer->get_int(kFilterInProperty)) {
+                info->producer->set(kFilterInProperty, info->frame_in);
+                int delta = info->frame_in - info->producer->get_int(kFilterInProperty);
+                emit m_filtersDock->producerInChanged(delta);
+            }
+            if (info->frame_out != info->producer->get_int(kFilterOutProperty)) {
+                info->producer->set(kFilterOutProperty, info->frame_out);
+                int delta = info->frame_out - info->producer->get_int(kFilterOutProperty);
+                emit m_filtersDock->producerOutChanged(delta);
+            }
+        }
+    }
 }
 
 void MainWindow::onMultitrackDurationChanged()
@@ -2200,8 +2629,17 @@ void MainWindow::onCutModified()
         m_playlistDock->setUpdateButtonEnabled(true);
 }
 
+void MainWindow::onProducerModified()
+{
+    setWindowModified(true);
+    updateAutoSave();
+    if (playlist())
+        m_playlistDock->setUpdateButtonEnabled(true);
+}
+
 void MainWindow::onFilterModelChanged()
 {
+    MLT.refreshConsumer();
     setWindowModified(true);
     updateAutoSave();
     if (playlist())
@@ -2245,19 +2683,25 @@ void MainWindow::on_actionForum_triggered()
     QDesktopServices::openUrl(QUrl("https://forum.shotcut.org/"));
 }
 
-void MainWindow::saveXML(const QString &filename, bool withRelativePaths)
+bool MainWindow::saveXML(const QString &filename, bool withRelativePaths)
 {
-    if (multitrack()) {
-        MLT.saveXML(filename, multitrack(), withRelativePaths);
-    } else if (playlist()) {
+    bool result;
+    if (m_timelineDock->model()->rowCount() > 0) {
+        result = MLT.saveXML(filename, multitrack(), withRelativePaths);
+    } else if (m_playlistDock->model()->rowCount() > 0) {
         int in = MLT.producer()->get_in();
         int out = MLT.producer()->get_out();
         MLT.producer()->set_in_and_out(0, MLT.producer()->get_length() - 1);
-        MLT.saveXML(filename, playlist(), withRelativePaths);
+        result = MLT.saveXML(filename, playlist(), withRelativePaths);
         MLT.producer()->set_in_and_out(in, out);
+    } else if (MLT.producer()) {
+        result = MLT.saveXML(filename, (MLT.isMultitrack() || MLT.isPlaylist())? MLT.savedProducer() : 0, withRelativePaths);
     } else {
-        MLT.saveXML(filename, 0, withRelativePaths);
+        // Save an empty playlist, which is accepted by both MLT and Shotcut.
+        Mlt::Playlist playlist(MLT.profile());
+        result = MLT.saveXML(filename, &playlist, withRelativePaths);
     }
+    return result;
 }
 
 void MainWindow::changeTheme(const QString &theme)
@@ -2280,6 +2724,8 @@ void MainWindow::changeTheme(const QString &theme)
         palette.setColor(QPalette::ButtonText, palette.color(QPalette::WindowText));
         palette.setColor(QPalette::Link, palette.color(QPalette::Highlight).lighter());
         palette.setColor(QPalette::LinkVisited, palette.color(QPalette::Highlight));
+        palette.setColor(QPalette::Disabled, QPalette::Text, Qt::darkGray);
+        palette.setColor(QPalette::Disabled, QPalette::ButtonText, Qt::darkGray);
         QApplication::setPalette(palette);
         QIcon::setThemeName("dark");
     } else if (theme == "light") {
@@ -2289,11 +2735,7 @@ void MainWindow::changeTheme(const QString &theme)
         QIcon::setThemeName("light");
     } else {
         QApplication::setStyle(qApp->property("system-style").toString());
-#if defined(Q_OS_UNIX) && !defined(Q_OS_MAC)
-        QIcon::setThemeName("");
-#else
         QIcon::setThemeName("oxygen");
-#endif
     }
     emit QmlApplication::singleton().paletteChanged();
     LOG_DEBUG() << "end";
@@ -2352,7 +2794,8 @@ QWidget *MainWindow::loadProducerWidget(Mlt::Producer* producer)
         w = new AvformatProducerWidget(this);
     else if (MLT.isImageProducer(producer)) {
         ImageProducerWidget* ipw = new ImageProducerWidget(this);
-        connect(m_player, SIGNAL(outChanged(int)), ipw, SLOT(setOutPoint(int)));
+        connect(m_player, SIGNAL(outChanged(int)), ipw, SLOT(updateDuration()));
+        connect(m_timelineDock, SIGNAL(imageDurationChanged()), ipw, SLOT(updateDuration()));
         w = ipw;
     }
     else if (service == "decklink" || resource.contains("decklink"))
@@ -2380,9 +2823,13 @@ QWidget *MainWindow::loadProducerWidget(Mlt::Producer* producer)
         scrollArea->setWidget(w);
         return w;
     } else if (playlist_type == producer->type()) {
-        w = new TrackPropertiesWidget(*producer, this);
-        scrollArea->setWidget(w);
-        return w;
+        int trackIndex = m_timelineDock->currentTrack();
+        bool isBottomVideo = m_timelineDock->model()->data(m_timelineDock->model()->index(trackIndex), MultitrackModel::IsBottomVideoRole).toBool();
+        if (!isBottomVideo) {
+            w = new TrackPropertiesWidget(*producer, this);
+            scrollArea->setWidget(w);
+            return w;
+        }
     } else if (tractor_type == producer->type()) {
         w = new TimelinePropertiesWidget(*producer, this);
         scrollArea->setWidget(w);
@@ -2393,8 +2840,11 @@ QWidget *MainWindow::loadProducerWidget(Mlt::Producer* producer)
         if (-1 != w->metaObject()->indexOfSignal("producerChanged(Mlt::Producer*)")) {
             connect(w, SIGNAL(producerChanged(Mlt::Producer*)), SLOT(onProducerChanged()));
             connect(w, SIGNAL(producerChanged(Mlt::Producer*)), m_filterController, SLOT(setProducer(Mlt::Producer*)));
-            if (producer->get_int(kMultitrackItemProperty))
+            if (producer->get(kMultitrackItemProperty))
                 connect(w, SIGNAL(producerChanged(Mlt::Producer*)), m_timelineDock, SLOT(onProducerChanged(Mlt::Producer*)));
+        }
+        if (-1 != w->metaObject()->indexOfSignal("modified()")) {
+            connect(w, SIGNAL(modified()), SLOT(onProducerModified()));
         }
         scrollArea->setWidget(w);
         onProducerChanged();
@@ -2402,23 +2852,6 @@ QWidget *MainWindow::loadProducerWidget(Mlt::Producer* producer)
         scrollArea->widget()->deleteLater();
     }
     return w;
-}
-
-void MainWindow::onMeltedUnitOpened()
-{
-    closeProducer();
-    if (m_meltedServerDock && m_meltedPlaylistDock) {
-        m_player->connectTransport(m_meltedPlaylistDock->transportControl());
-        connect(m_meltedServerDock, SIGNAL(positionUpdated(int,double,int,int,int,bool)),
-                m_player, SLOT(onShowFrame(int,double,int,int,int,bool)));
-    }
-    onProducerChanged();
-}
-
-void MainWindow::onMeltedUnitActivated()
-{
-    m_meltedPlaylistDock->setVisible(true);
-    m_meltedPlaylistDock->raise();
 }
 
 void MainWindow::on_actionEnter_Full_Screen_triggered()
@@ -2441,7 +2874,7 @@ void MainWindow::onGpuNotSupported()
     }
     LOG_WARNING() << "";
     QMessageBox::critical(this, qApp->applicationName(),
-        tr("GPU Processing is not supported"));
+        tr("GPU effects are not supported"));
 }
 
 void MainWindow::editHTML(const QString &fileName)
@@ -2500,6 +2933,8 @@ void MainWindow::setInToCurrent(bool ripple)
         m_timelineDock->trimClipAtPlayhead(TimelineDock::TrimInPoint, ripple);
     } else if (MLT.isSeekable() && MLT.isClip()) {
         m_player->setIn(m_player->position());
+        int delta = m_player->position() - MLT.producer()->get_in();
+        emit m_player->inChanged(delta);
     }
 }
 
@@ -2509,6 +2944,8 @@ void MainWindow::setOutToCurrent(bool ripple)
         m_timelineDock->trimClipAtPlayhead(TimelineDock::TrimOutPoint, ripple);
     } else if (MLT.isSeekable() && MLT.isClip()) {
         m_player->setOut(m_player->position());
+        int delta = m_player->position() - MLT.producer()->get_out();
+        emit m_player->outChanged(delta);
     }
 }
 
@@ -2520,6 +2957,23 @@ void MainWindow::onShuttle(float x)
         m_player->play(10.0 * x);
     } else {
         m_player->play(20.0 * x);
+    }
+}
+
+void MainWindow::showUpgradePrompt()
+{
+    if (Settings.checkUpgradeAutomatic()) {
+        showStatusMessage("Checking for upgrade...");
+        QNetworkRequest request(QUrl("https://check.shotcut.org/version.json"));
+        QSslConfiguration sslConfig = request.sslConfiguration();
+        sslConfig.setPeerVerifyMode(QSslSocket::VerifyNone);
+        request.setSslConfiguration(sslConfig);
+        m_network.get(request);
+    } else {
+        m_network.setStrictTransportSecurityEnabled(false);
+        QAction* action = new QAction(tr("Click here to check for a new version of Shotcut."), 0);
+        connect(action, SIGNAL(triggered(bool)), SLOT(on_actionUpgrade_triggered()));
+        showStatusMessage(action, 15 /* seconds */);
     }
 }
 
@@ -2546,12 +3000,36 @@ void MainWindow::on_actionProgressive_triggered(bool checked)
     Settings.setPlayerProgressive(checked);
 }
 
+void MainWindow::changeAudioChannels(bool checked, int channels)
+{
+    if( checked ) {
+        Settings.setPlayerAudioChannels(channels);
+        setAudioChannels(Settings.playerAudioChannels());
+    }
+}
+
+void MainWindow::on_actionChannels1_triggered(bool checked)
+{
+    changeAudioChannels(checked, 1);
+}
+
+void MainWindow::on_actionChannels2_triggered(bool checked)
+{
+    changeAudioChannels(checked, 2);
+}
+
+void MainWindow::on_actionChannels6_triggered(bool checked)
+{
+    changeAudioChannels(checked, 6);
+}
+
 void MainWindow::changeDeinterlacer(bool checked, const char* method)
 {
     if (checked) {
         MLT.videoWidget()->setProperty("deinterlace_method", method);
         if (MLT.consumer()) {
             MLT.consumer()->set("deinterlace_method", method);
+            MLT.refreshConsumer();
         }
     }
     Settings.setPlayerDeinterlacer(method);
@@ -2583,52 +3061,49 @@ void MainWindow::changeInterpolation(bool checked, const char* method)
         MLT.videoWidget()->setProperty("rescale", method);
         if (MLT.consumer()) {
             MLT.consumer()->set("rescale", method);
+            MLT.refreshConsumer();
         }
     }
     Settings.setPlayerInterpolation(method);
 }
 
-class AppendTask : public QRunnable
+void AppendTask::run()
 {
-public:
-    AppendTask(PlaylistModel* model, const QStringList& filenames)
-        : QRunnable()
-        , model(model)
-        , filenames(filenames)
-    {
-    }
-    void run()
-    {
-        foreach (QString filename, filenames) {
-            Mlt::Producer p(MLT.profile(), filename.toUtf8().constData());
-            if (p.is_valid()) {
-                // Convert avformat to avformat-novalidate so that XML loads faster.
-                if (!qstrcmp(p.get("mlt_service"), "avformat")) {
-                    p.set("mlt_service", "avformat-novalidate");
-                    p.set("mute_on_pause", 0);
-                }
-                MLT.setImageDurationFromDefault(&p);
-                MAIN.getHash(p);
-                MAIN.undoStack()->push(new Playlist::AppendCommand(*model, MLT.XML(&p)));
+    foreach (QString filename, filenames) {
+        LOG_DEBUG() << filename;
+        Mlt::Producer p(MLT.profile(), filename.toUtf8().constData());
+        if (p.is_valid()) {
+            // Convert avformat to avformat-novalidate so that XML loads faster.
+            if (!qstrcmp(p.get("mlt_service"), "avformat")) {
+                p.set("mlt_service", "avformat-novalidate");
+                p.set("mute_on_pause", 0);
             }
+            if (QDir::toNativeSeparators(filename) == QDir::toNativeSeparators(MAIN.fileName())) {
+                MAIN.showStatusMessage(QObject::tr("You cannot add a project to itself!"));
+                continue;
+            }
+            MLT.setImageDurationFromDefault(&p);
+            MLT.lockCreationTime(&p);
+            MAIN.getHash(p);
+            emit appendToPlaylist(MLT.XML(&p));
         }
     }
-private:
-    PlaylistModel* model;
-    const QStringList& filenames;
-};
+    emit done();
+}
 
 void MainWindow::processMultipleFiles()
 {
-    if (m_multipleFiles.length() > 0) {
-        PlaylistModel* model = m_playlistDock->model();
+    if (m_multipleFiles.length() > 1) {
         m_playlistDock->show();
         m_playlistDock->raise();
-        QThreadPool::globalInstance()->start(new AppendTask(model, m_multipleFiles));
+        AppendTask* task = new AppendTask(m_multipleFiles);
+        connect(task, SIGNAL(appendToPlaylist(QString)), SLOT(onAppendToPlaylist(QString)));
+        connect(task, SIGNAL(done()), SLOT(onAppendTaskDone()));
+        QThreadPool::globalInstance()->start(task, 9);
         foreach (QString filename, m_multipleFiles)
             m_recentDock->add(filename.toUtf8().constData());
-        m_multipleFiles.clear();
     }
+    m_multipleFiles.clear();
     if (m_isPlaylistLoaded && Settings.playerGPU()) {
         updateThumbnails();
         m_isPlaylistLoaded = false;
@@ -2687,19 +3162,46 @@ void MainWindow::on_actionJack_triggered(bool checked)
 
 void MainWindow::on_actionGPU_triggered(bool checked)
 {
-    Settings.setPlayerGPU(checked);
-    QMessageBox dialog(QMessageBox::Information,
-                       qApp->applicationName(),
-                       tr("You must restart Shotcut to switch using GPU processing.\n"
-                          "Do you want to restart now?"),
-                       QMessageBox::No | QMessageBox::Yes,
-                       this);
-    dialog.setDefaultButton(QMessageBox::Yes);
-    dialog.setEscapeButton(QMessageBox::No);
-    dialog.setWindowModality(QmlApplication::dialogModality());
-    if (dialog.exec() == QMessageBox::Yes) {
-        m_exitCode = EXIT_RESTART;
-        QApplication::closeAllWindows();
+    if (checked) {
+        QMessageBox dialog(QMessageBox::Warning,
+                           qApp->applicationName(),
+                           tr("GPU effects are experimental and may cause instability on some systems. "
+                              "Some CPU effects are incompatible with GPU effects and will be disabled. "
+                              "A project created with GPU effects can not be converted to a CPU only project later."
+                              "\n\n"
+                              "Do you want to enable GPU effects and restart Shotcut?"),
+                           QMessageBox::No | QMessageBox::Yes,
+                           this);
+        dialog.setDefaultButton(QMessageBox::Yes);
+        dialog.setEscapeButton(QMessageBox::No);
+        dialog.setWindowModality(QmlApplication::dialogModality());
+        if (dialog.exec() == QMessageBox::Yes) {
+            m_exitCode = EXIT_RESTART;
+            QApplication::closeAllWindows();
+        }
+        else {
+            ui->actionGPU->setChecked(false);
+        }
+    }
+    else
+    {
+        QMessageBox dialog(QMessageBox::Information,
+                           qApp->applicationName(),
+                           tr("Shotcut must restart to disable GPU effects."
+                              "\n\n"
+                              "Disable GPU effects and restart?"),
+                           QMessageBox::No | QMessageBox::Yes,
+                           this);
+        dialog.setDefaultButton(QMessageBox::Yes);
+        dialog.setEscapeButton(QMessageBox::No);
+        dialog.setWindowModality(QmlApplication::dialogModality());
+        if (dialog.exec() == QMessageBox::Yes) {
+            m_exitCode = EXIT_RESTART;
+            QApplication::closeAllWindows();
+        }
+        else {
+            ui->actionGPU->setChecked(true);
+        }
     }
 }
 
@@ -2765,8 +3267,14 @@ void MainWindow::onKeyerTriggered(QAction *action)
 void MainWindow::onProfileTriggered(QAction *action)
 {
     Settings.setPlayerProfile(action->data().toString());
-    setProfile(action->data().toString());
-    MLT.restart();
+    if (MLT.producer() && MLT.producer()->is_valid()) {
+        // Save the XML to get correct in/out points before profile is changed.
+        QString xml = MLT.XML();
+        setProfile(action->data().toString());
+        MLT.restart(xml);
+    } else {
+        setProfile(action->data().toString());
+    }
 }
 
 void MainWindow::onProfileChanged()
@@ -2779,19 +3287,24 @@ void MainWindow::onProfileChanged()
 
 void MainWindow::on_actionAddCustomProfile_triggered()
 {
+    QString xml;
+    if (MLT.producer() && MLT.producer()->is_valid()) {
+        // Save the XML to get correct in/out points before profile is changed.
+        xml = MLT.XML();
+    }
     CustomProfileDialog dialog(this);
     dialog.setWindowModality(QmlApplication::dialogModality());
     if (dialog.exec() == QDialog::Accepted) {
-        QDir dir(Settings.appDataLocation());
-        if (dir.cd("profiles")) {
-            QString name = dialog.profileName();
-            QStringList profiles = dir.entryList(QDir::Files | QDir::NoDotAndDotDot | QDir::Readable);
-            if (profiles.length() == 1)
-                m_customProfileMenu->addSeparator();
-            QAction* action = addProfile(m_profileGroup, name, dir.filePath(name));
-            action->setChecked(true);
-            m_customProfileMenu->addAction(action);
+        QString name = dialog.profileName();
+        if (!name.isEmpty()) {
+            addCustomProfile(name, customProfileMenu(), actionProfileRemove(), profileGroup());
+        } else if (m_profileGroup->checkedAction()) {
+            m_profileGroup->checkedAction()->setChecked(false);
         }
+        // Use the new profile.
+        emit profileChanged();
+        if (!xml.isEmpty())
+            MLT.restart(xml);
     }
 }
 
@@ -2800,9 +3313,6 @@ void MainWindow::on_actionSystemTheme_triggered()
     changeTheme("system");
     QApplication::setPalette(QApplication::style()->standardPalette());
     Settings.setTheme("system");
-#if defined(Q_OS_UNIX) && !defined(Q_OS_MAC)
-    ui->mainToolBar->setToolButtonStyle(Qt::ToolButtonFollowStyle);
-#endif
 }
 
 void MainWindow::on_actionFusionDark_triggered()
@@ -2828,6 +3338,13 @@ void MainWindow::on_actionRestoreLayout_triggered()
 {
     restoreGeometry(Settings.windowGeometryDefault());
     restoreState(Settings.windowStateDefault());
+    on_actionLayoutTimeline_triggered();
+    ui->actionShowTitleBars->setChecked(true);
+    on_actionShowTitleBars_triggered(true);
+    ui->actionShowTextUnderIcons->setChecked(true);
+    on_actionShowTextUnderIcons_toggled(true);
+    ui->actionShowSmallIcons->setChecked(false);
+    on_actionShowSmallIcons_toggled(false);
 }
 
 void MainWindow::on_actionShowTitleBars_triggered(bool checked)
@@ -2878,6 +3395,21 @@ void MainWindow::on_menuExternal_aboutToShow()
 
 void MainWindow::on_actionUpgrade_triggered()
 {
+    if (Settings.askUpgradeAutmatic()) {
+        QMessageBox dialog(QMessageBox::Question,
+           qApp->applicationName(),
+           tr("Do you want to automatically check for updates in the future?"),
+           QMessageBox::No |
+           QMessageBox::Yes,
+           this);
+        dialog.setWindowModality(QmlApplication::dialogModality());
+        dialog.setDefaultButton(QMessageBox::Yes);
+        dialog.setEscapeButton(QMessageBox::No);
+        dialog.setCheckBox(new QCheckBox(tr("Do not show this anymore.", "Automatic upgrade check dialog")));
+        Settings.setCheckUpgradeAutomatic(dialog.exec() == QMessageBox::Yes);
+        if (dialog.checkBox()->isChecked())
+            Settings.setAskUpgradeAutomatic(false);
+    }
     showStatusMessage("Checking for upgrade...");
     m_network.get(QNetworkRequest(QUrl("http://check.shotcut.org/version.json")));
 }
@@ -2897,6 +3429,26 @@ void MainWindow::on_actionOpenXML_triggered()
             if (!isCompatibleWithGpuMode(checker))
                 return;
             isXmlRepaired(checker, url);
+            // Check if the locale usage differs.
+            // Get current locale.
+            QString localeName = QString(::setlocale(LC_ALL, nullptr)).toUpper();
+            // Test if it is C or POSIX.
+            bool currentlyUsingLocale = (localeName != "" && localeName != "C" && localeName != "POSIX");
+            if (currentlyUsingLocale != checker.usesLocale()) {
+                // Show a warning dialog and cancel if requested.
+                QMessageBox dialog(QMessageBox::Question,
+                   qApp->applicationName(),
+                   tr("The decimal point of the MLT XML file\nyou want to open is incompatible.\n\n"
+                      "Do you want to continue to open this MLT XML file?"),
+                   QMessageBox::No |
+                   QMessageBox::Yes,
+                   this);
+                dialog.setWindowModality(QmlApplication::dialogModality());
+                dialog.setDefaultButton(QMessageBox::No);
+                dialog.setEscapeButton(QMessageBox::No);
+                if (dialog.exec() != QMessageBox::Yes)
+                    return;
+            }
         }
         Settings.setOpenPath(QFileInfo(url).path());
         activateWindow();
@@ -2943,7 +3495,7 @@ void MainWindow::on_actionScrubAudio_triggered(bool checked)
     Settings.setPlayerScrubAudio(checked);
 }
 
-#ifdef Q_OS_WIN
+#if !defined(Q_OS_MAC)
 void MainWindow::onDrawingMethodTriggered(QAction *action)
 {
     Settings.setDrawMethod(action->data().toInt());
@@ -2977,14 +3529,17 @@ void MainWindow::on_actionApplicationLog_triggered()
 
 void MainWindow::on_actionClose_triggered()
 {
-    if (MAIN.continueModified()) {
+    if (continueModified()) {
         LOG_DEBUG() << "";
+        MLT.setProjectFolder(QString());
+        MLT.stop();
         if (multitrack())
             m_timelineDock->model()->close();
         if (playlist())
             m_playlistDock->model()->close();
         else
             onMultitrackClosed();
+        MLT.resetLocale();
     }
 }
 
@@ -3002,14 +3557,16 @@ void MainWindow::onUpgradeCheckFinished(QNetworkReply* reply)
         QByteArray response = reply->readAll();
         LOG_DEBUG() << "response: " << response;
         QJsonDocument json = QJsonDocument::fromJson(response);
+        QString current = qApp->applicationVersion();
+
         if (!json.isNull() && json.object().value("version_string").type() == QJsonValue::String) {
-            QString version = json.object().value("version_string").toString();
-            if (version != qApp->applicationVersion()) {
-                QAction* action = new QAction(tr("Shotcut version %1 is available! Click here to get it.").arg(version), 0);
+            QString latest = json.object().value("version_string").toString();
+            if (current != "adhoc" && QVersionNumber::fromString(current) < QVersionNumber::fromString(latest)) {
+                QAction* action = new QAction(tr("Shotcut version %1 is available! Click here to get it.").arg(latest), 0);
                 connect(action, SIGNAL(triggered(bool)), SLOT(onUpgradeTriggered()));
                 if (!json.object().value("url").isUndefined())
                     m_upgradeUrl = json.object().value("url").toString();
-                showStatusMessage(action, 10 /* seconds */);
+                showStatusMessage(action, 15 /* seconds */);
             } else {
                 showStatusMessage(tr("You are running the latest version of Shotcut."));
             }
@@ -3070,12 +3627,15 @@ void MainWindow::on_actionExportEDL_triggered()
 {
     // Dialog to get export file name.
     QString path = Settings.savePath();
-    path.append("/.edl");
-    QString saveFileName = QFileDialog::getSaveFileName(this, tr("Export EDL"), path, tr("EDL (*.edl)"));
+    QString caption = tr("Export EDL");
+    QString saveFileName = QFileDialog::getSaveFileName(this, caption, path, tr("EDL (*.edl);;All Files (*)"));
     if (!saveFileName.isEmpty()) {
         QFileInfo fi(saveFileName);
         if (fi.suffix() != "edl")
             saveFileName += ".edl";
+
+        if (Util::warnIfNotWritable(saveFileName, this, caption))
+            return;
 
         // Locate the JavaScript file in the filesystem.
         QDir qmlDir = QmlUtilities::qmlDir();
@@ -3100,7 +3660,7 @@ void MainWindow::on_actionExportEDL_triggered()
                 options.setProperty("useBaseNameForClipComment", true);
                 options.setProperty("channelsAV", "AA/V");
                 QJSValueList args;
-                args << MLT.XML(0, true) << options;
+                args << MLT.XML(0, true, true) << options;
                 result = result.call(args);
                 if (!result.isError()) {
                     // Save the result with the export file name.
@@ -3142,13 +3702,23 @@ void MainWindow::onGLWidgetImageReady()
         disconnect(glw, SIGNAL(imageReady()), this, 0);
     if (!image.isNull()) {
         QString path = Settings.savePath();
-        path.append("/.png");
-        QString saveFileName = QFileDialog::getSaveFileName(this, tr("Export Frame"), path);
+        QString caption = tr("Export Frame");
+        QString nameFilter = tr("PNG (*.png);;BMP (*.bmp);;JPEG (*.jpg *.jpeg);;PPM (*.ppm);;TIFF (*.tif *.tiff);;WebP (*.webp);;All Files (*)");
+        QString saveFileName = QFileDialog::getSaveFileName(this, caption, path, nameFilter);
         if (!saveFileName.isEmpty()) {
             QFileInfo fi(saveFileName);
             if (fi.suffix().isEmpty())
                 saveFileName += ".png";
-            image.save(saveFileName);
+            if (Util::warnIfNotWritable(saveFileName, this, caption))
+                return;
+            // Convert to square pixels if needed.
+            qreal aspectRatio = (qreal) image.width() / image.height();
+            if (qFloor(aspectRatio * 1000) != qFloor(MLT.profile().dar() * 1000)) {
+                image = image.scaled(qRound(image.height() * MLT.profile().dar()), image.height(),
+                                     Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            }
+            image.save(saveFileName, Q_NULLPTR,
+                (QFileInfo(saveFileName).suffix() == "webp")? 80 : -1);
             Settings.setSavePath(fi.path());
             m_recentDock->add(saveFileName);
         }
@@ -3198,10 +3768,260 @@ void MainWindow::on_actionAppDataSet_triggered()
 
 void MainWindow::on_actionAppDataShow_triggered()
 {
-    QDesktopServices::openUrl(QUrl::fromLocalFile(Settings.appDataLocation()));
+    Util::showInFolder(Settings.appDataLocation());
 }
 
 void MainWindow::on_actionNew_triggered()
 {
     on_actionClose_triggered();
+}
+
+void MainWindow::on_actionKeyboardShortcuts_triggered()
+{
+    QDesktopServices::openUrl(QUrl("https://www.shotcut.org/howtos/keyboard-shortcuts/"));
+}
+
+void MainWindow::on_actionLayoutPlayer_triggered()
+{
+    restoreState(Settings.windowStateDefault());
+}
+
+void MainWindow::on_actionLayoutPlaylist_triggered()
+{
+    restoreState(Settings.windowStateDefault());
+    m_recentDock->show();
+    m_recentDock->raise();
+    m_playlistDock->show();
+    m_playlistDock->raise();
+}
+
+void MainWindow::on_actionLayoutTimeline_triggered()
+{
+    restoreState(Settings.windowStateDefault());
+    QDockWidget* audioMeterDock = findChild<QDockWidget*>("AudioPeakMeterDock");
+    if (audioMeterDock) {
+        audioMeterDock->show();
+        audioMeterDock->raise();
+    }
+    m_recentDock->show();
+    m_recentDock->raise();
+    m_filtersDock->show();
+    m_filtersDock->raise();
+    m_timelineDock->show();
+    m_timelineDock->raise();
+}
+
+void MainWindow::on_actionLayoutClip_triggered()
+{
+    restoreState(Settings.windowStateDefault());
+    m_recentDock->show();
+    m_recentDock->raise();
+    m_filtersDock->show();
+    m_filtersDock->raise();
+}
+
+void MainWindow::on_actionLayoutAdd_triggered()
+{
+    bool ok;
+    QString name = QInputDialog::getText(this, tr("Add Custom Layout"),
+                                         tr("Name"), QLineEdit::Normal,
+                                         "", &ok);
+    if (ok && !name.isEmpty()) {
+        if (Settings.setLayout(name, saveGeometry(), saveState())) {
+            Settings.sync();
+            if (Settings.layouts().size() == 1) {
+                ui->menuLayout->addAction(ui->actionLayoutRemove);
+                ui->menuLayout->addSeparator();
+            }
+            ui->menuLayout->addAction(addLayout(m_layoutGroup, name));
+        }
+    }
+}
+
+void MainWindow::onLayoutTriggered(QAction* action)
+{
+    restoreGeometry(Settings.layoutGeometry(action->text()));
+    restoreState(Settings.layoutState(action->text()));
+}
+
+void MainWindow::on_actionProfileRemove_triggered()
+{
+    QDir dir(Settings.appDataLocation());
+    if (dir.cd("profiles")) {
+        // Setup the dialog.
+        QStringList profiles = dir.entryList(QDir::Files | QDir::NoDotAndDotDot | QDir::Readable);
+        ListSelectionDialog dialog(profiles, this);
+        dialog.setWindowModality(QmlApplication::dialogModality());
+        dialog.setWindowTitle(tr("Remove Video Mode"));
+
+        // Show the dialog.
+        if (dialog.exec() == QDialog::Accepted) {
+            removeCustomProfiles(dialog.selection(), dir, customProfileMenu(), actionProfileRemove());
+        }
+    }
+}
+
+void MainWindow::on_actionLayoutRemove_triggered()
+{
+    // Setup the dialog.
+    ListSelectionDialog dialog(Settings.layouts(), this);
+    dialog.setWindowModality(QmlApplication::dialogModality());
+    dialog.setWindowTitle(tr("Remove Layout"));
+
+    // Show the dialog.
+    if (dialog.exec() == QDialog::Accepted) {
+        foreach(const QString& layout, dialog.selection()) {
+            // Update the configuration.
+            if (Settings.removeLayout(layout))
+                Settings.sync();
+            // Locate the menu item.
+            foreach (QAction* action, ui->menuLayout->actions()) {
+                if (action->text() == layout) {
+                    // Remove the menu item.
+                    delete action;
+                    break;
+                }
+            }
+        }
+        // If no more custom layouts.
+        if (Settings.layouts().size() == 0) {
+            // Remove the Remove action and separator.
+            ui->menuLayout->removeAction(ui->actionLayoutRemove);
+            bool isSecondSeparator = false;
+            foreach (QAction* action, ui->menuLayout->actions()) {
+                if (action->isSeparator()) {
+                    if (isSecondSeparator) {
+                        delete action;
+                        break;
+                    } else {
+                        isSecondSeparator = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void MainWindow::onAppendToPlaylist(const QString& xml)
+{
+    undoStack()->push(new Playlist::AppendCommand(*m_playlistDock->model(), xml, false));
+}
+
+void MainWindow::onAppendTaskDone()
+{
+    qApp->processEvents();
+    emit m_playlistDock->model()->modified();
+}
+
+void MainWindow::on_actionOpenOther2_triggered()
+{
+    ui->actionOpenOther2->menu()->popup(mapToGlobal(ui->mainToolBar->geometry().bottomLeft()) + QPoint(64, 0));
+}
+
+void MainWindow::onOpenOtherTriggered(QWidget* widget)
+{
+    QDialog dialog(this);
+    dialog.resize(426, 288);
+    QVBoxLayout vlayout(&dialog);
+    vlayout.addWidget(widget);
+    QDialogButtonBox buttonBox(&dialog);
+    buttonBox.setOrientation(Qt::Horizontal);
+    buttonBox.setStandardButtons(QDialogButtonBox::Cancel | QDialogButtonBox::Ok);
+    vlayout.addWidget(&buttonBox);
+    connect(&buttonBox, SIGNAL(accepted()), &dialog, SLOT(accept()));
+    connect(&buttonBox, SIGNAL(rejected()), &dialog, SLOT(reject()));
+    QString name = widget->objectName();
+    if (name == "NoiseWidget" || dialog.exec() == QDialog::Accepted) {
+        open(dynamic_cast<AbstractProducerWidget*>(widget)->newProducer(MLT.profile()));
+        if (name == "TextProducerWidget") {
+            m_filtersDock->show();
+            m_filtersDock->raise();
+        } else {
+            m_propertiesDock->show();
+            m_propertiesDock->raise();
+        }
+    }
+    delete widget;
+}
+
+void MainWindow::onOpenOtherTriggered()
+{
+    if (sender()->objectName() == "color")
+        onOpenOtherTriggered(new ColorProducerWidget(this));
+    else if (sender()->objectName() == "text")
+        onOpenOtherTriggered(new TextProducerWidget(this));
+    else if (sender()->objectName() == "noise")
+        onOpenOtherTriggered(new NoiseWidget(this));
+    else if (sender()->objectName() == "ising0r")
+        onOpenOtherTriggered(new IsingWidget(this));
+    else if (sender()->objectName() == "lissajous0r")
+        onOpenOtherTriggered(new LissajousWidget(this));
+    else if (sender()->objectName() == "plasma")
+        onOpenOtherTriggered(new PlasmaWidget(this));
+    else if (sender()->objectName() == "test_pat_B")
+        onOpenOtherTriggered(new ColorBarsWidget(this));
+    else if (sender()->objectName() == "tone")
+        onOpenOtherTriggered(new ToneProducerWidget(this));
+    else if (sender()->objectName() == "count")
+        onOpenOtherTriggered(new CountProducerWidget(this));
+    else if (sender()->objectName() == "v4l2")
+        onOpenOtherTriggered(new Video4LinuxWidget(this));
+    else if (sender()->objectName() == "pulse")
+        onOpenOtherTriggered(new PulseAudioWidget(this));
+    else if (sender()->objectName() == "jack")
+        onOpenOtherTriggered(new JackProducerWidget(this));
+    else if (sender()->objectName() == "alsa")
+        onOpenOtherTriggered(new AlsaWidget(this));
+#if defined(Q_OS_MAC)
+    else if (sender()->objectName() == "device")
+        onOpenOtherTriggered(new AvfoundationProducerWidget(this));
+#elif defined(Q_OS_WIN)
+    else if (sender()->objectName() == "device")
+        onOpenOtherTriggered(new DirectShowVideoWidget(this));
+#endif
+    else if (sender()->objectName() == "decklink")
+        onOpenOtherTriggered(new DecklinkProducerWidget(this));
+}
+
+void MainWindow::on_actionClearRecentOnExit_toggled(bool arg1)
+{
+    Settings.setClearRecent(arg1);
+    if (arg1)
+        Settings.setRecent(QStringList());
+}
+
+void MainWindow::onSceneGraphInitialized()
+{
+    if (Settings.playerGPU() && Settings.playerWarnGPU()) {
+        QMessageBox dialog(QMessageBox::Warning,
+                           qApp->applicationName(),
+                           tr("GPU effects are EXPERIMENTAL, UNSTABLE and UNSUPPORTED! Unsupported means do not report bugs about it.\n\n"
+                              "Do you want to disable GPU effects and restart Shotcut?"),
+                           QMessageBox::No | QMessageBox::Yes,
+                           this);
+        dialog.setDefaultButton(QMessageBox::Yes);
+        dialog.setEscapeButton(QMessageBox::No);
+        dialog.setWindowModality(QmlApplication::dialogModality());
+        if (dialog.exec() == QMessageBox::Yes) {
+            ui->actionGPU->setChecked(false);
+            m_exitCode = EXIT_RESTART;
+            QApplication::closeAllWindows();
+        } else {
+            ui->actionGPU->setVisible(true);
+        }
+    } else if (Settings.playerGPU()) {
+        ui->actionGPU->setVisible(true);
+    }
+}
+
+void MainWindow::on_actionShowTextUnderIcons_toggled(bool b)
+{
+    ui->mainToolBar->setToolButtonStyle(b? Qt::ToolButtonTextUnderIcon : Qt::ToolButtonIconOnly);
+    Settings.setTextUnderIcons(b);
+}
+
+void MainWindow::on_actionShowSmallIcons_toggled(bool b)
+{
+    ui->mainToolBar->setIconSize(b? QSize(16, 16) : QSize());
+    Settings.setSmallIcons(b);
 }

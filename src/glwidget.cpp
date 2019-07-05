@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2011-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2011-2019 Meltytech, LLC
  *
  * GL shader based on BSD licensed code from Peter Bengtsson:
  * http://www.fourcc.org/source/YUV420P-OpenGL-GLSLang.c
@@ -25,6 +24,7 @@
 #include <QUrl>
 #include <QOffscreenSurface>
 #include <QtQml>
+#include <QQuickItem>
 #include <Mlt.h>
 #include <Logger.h>
 #include "glwidget.h"
@@ -34,12 +34,6 @@
 #include "mainwindow.h"
 
 #define USE_GL_SYNC // Use glFinish() if not defined.
-
-#ifdef Q_OS_MAC
-static const int FRAMEDISPLAYED_MIN_MS = 80; // max 12.5 fps
-#else
-static const int FRAMEDISPLAYED_MIN_MS = 10; // max 100 fps
-#endif
 
 #ifdef QT_NO_DEBUG
 #define check_error(fn) {}
@@ -61,6 +55,7 @@ using namespace Mlt;
 GLWidget::GLWidget(QObject *parent)
     : QQuickWidget(QmlUtilities::sharedEngine(), (QWidget*) parent)
     , Controller()
+    , m_grid(0)
     , m_shader(0)
     , m_glslManager(0)
     , m_initSem(0)
@@ -73,6 +68,7 @@ GLWidget::GLWidget(QObject *parent)
     , m_zoom(0.0f)
     , m_offset(QPoint(0, 0))
     , m_shareContext(0)
+    , m_snapToGrid(true)
 {
     LOG_DEBUG() << "begin";
     m_texture[0] = m_texture[1] = m_texture[2] = 0;
@@ -116,6 +112,7 @@ GLWidget::~GLWidget()
     }
     delete m_shareContext;
     delete m_shader;
+    LOG_DEBUG() << "end";
 }
 
 void GLWidget::initializeGL()
@@ -172,11 +169,9 @@ void GLWidget::initializeGL()
     m_frameRenderer = new FrameRenderer(quickWindow()->openglContext(), &m_offscreenSurface);
     quickWindow()->openglContext()->makeCurrent(quickWindow());
 
-    connect(m_frameRenderer, SIGNAL(frameDisplayed(const SharedFrame&)), this, SIGNAL(frameDisplayed(const SharedFrame&)), Qt::QueuedConnection);
-    if (Settings.playerGPU() || quickWindow()->openglContext()->supportsThreadedOpenGL())
-        connect(m_frameRenderer, SIGNAL(textureReady(GLuint,GLuint,GLuint)), SLOT(updateTexture(GLuint,GLuint,GLuint)), Qt::DirectConnection);
-    else
-        connect(m_frameRenderer, SIGNAL(frameDisplayed(const SharedFrame&)), SLOT(onFrameDisplayed(const SharedFrame&)), Qt::QueuedConnection);
+    connect(m_frameRenderer, SIGNAL(frameDisplayed(const SharedFrame&)), SLOT(onFrameDisplayed(const SharedFrame&)), Qt::QueuedConnection);
+    connect(m_frameRenderer, SIGNAL(frameDisplayed(const SharedFrame&)), SIGNAL(frameDisplayed(const SharedFrame&)), Qt::QueuedConnection);
+    connect(m_frameRenderer, SIGNAL(textureReady(GLuint,GLuint,GLuint)), SLOT(updateTexture(GLuint,GLuint,GLuint)), Qt::DirectConnection);
     connect(m_frameRenderer, SIGNAL(imageReady()), SIGNAL(imageReady()));
 
     m_initSem.release();
@@ -187,6 +182,7 @@ void GLWidget::initializeGL()
 void GLWidget::setBlankScene()
 {
     setSource(QmlUtilities::blankVui());
+    m_savedQmlSource.clear();
 }
 
 void GLWidget::resizeGL(int width, int height)
@@ -290,6 +286,9 @@ static void uploadTextures(QOpenGLContext* context, SharedFrame& frame, GLuint t
     const uint8_t* image = frame.get_image();
     QOpenGLFunctions* f = context->functions();
 
+    // The planes of pixel data may not be a multiple of the default 4 bytes.
+    f->glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
     // Upload each plane of YUV to a texture.
     if (texture[0])
         f->glDeleteTextures(3, texture);
@@ -366,9 +365,18 @@ void GLWidget::paintGL()
         }
         uploadTextures(quickWindow()->openglContext(), m_sharedFrame, m_texture);
         m_mutex.unlock();
+    } else if (m_glslManager) {
+        m_mutex.lock();
+        if (m_sharedFrame.is_valid()) {
+            m_texture[0] = *((GLuint*) m_sharedFrame.get_image());
+        }
     }
 
-    if (!m_texture[0]) return;
+    if (!m_texture[0]) {
+        if (m_glslManager)
+            m_mutex.unlock();
+        return;
+    }
 
     // Bind textures.
     for (int i = 0; i < 3; ++i) {
@@ -449,6 +457,11 @@ void GLWidget::paintGL()
     }
     glActiveTexture(GL_TEXTURE0);
     check_error(f);
+
+    if (m_glslManager) {
+        glFinish(); check_error(f);
+        m_mutex.unlock();
+    }
 }
 
 void GLWidget::mousePressEvent(QMouseEvent* event)
@@ -471,10 +484,23 @@ void GLWidget::mouseMoveEvent(QMouseEvent* event)
     }
     if (!(event->buttons() & Qt::LeftButton))
         return;
+    if (m_dragStart.isNull())
+        return;
     if ((event->pos() - m_dragStart).manhattanLength() < QApplication::startDragDistance())
         return;
-    if (!MLT.producer() || !MLT.isSeekableClip())
+    // Reset the drag point to prevent repeating drag actions.
+    m_dragStart.setX(0);
+    m_dragStart.setY(0);
+    if (!MLT.producer())
         return;
+    if (MLT.isMultitrack() || MLT.isPlaylist()) {
+        MAIN.showStatusMessage(tr("You cannot drag from Project."));
+        return;
+    } else if (!MLT.isSeekableClip()) {
+        MAIN.showStatusMessage(tr("You cannot drag a non-seekable source"));
+        return;
+    }
+
     QDrag *drag = new QDrag(this);
     QMimeData *mimeData = new QMimeData;
     mimeData->setData(Mlt::XmlMimeType, MLT.XML().toUtf8());
@@ -591,17 +617,17 @@ int GLWidget::reconfigure(bool isMulti)
     QString serviceName = property("mlt_service").toString();
     if (!m_consumer || !m_consumer->is_valid()) {
         if (serviceName.isEmpty()) {
-            m_consumer = new Mlt::FilteredConsumer(profile(), "sdl_audio");
+            m_consumer.reset(new Mlt::FilteredConsumer(profile(), "sdl2_audio"));
             if (m_consumer->is_valid())
-                serviceName = "sdl_audio";
+                serviceName = "sdl2_audio";
             else
                 serviceName = "rtaudio";
-            delete m_consumer;
+            m_consumer.reset();
         }
         if (isMulti)
-            m_consumer = new Mlt::FilteredConsumer(profile(), "multi");
+            m_consumer.reset(new Mlt::FilteredConsumer(profile(), "multi"));
         else
-            m_consumer = new Mlt::FilteredConsumer(profile(), serviceName.toLatin1().constData());
+            m_consumer.reset(new Mlt::FilteredConsumer(profile(), serviceName.toLatin1().constData()));
 
         delete m_threadStartEvent;
         m_threadStartEvent = 0;
@@ -621,38 +647,27 @@ int GLWidget::reconfigure(bool isMulti)
         m_consumer->set("real_time", MLT.realTime());
         m_consumer->set("mlt_image_format", "yuv422");
         m_consumer->set("color_trc", Settings.playerGamma().toLatin1().constData());
+        m_consumer->set("channels", property("audio_channels").toInt());
 
         if (isMulti) {
             m_consumer->set("terminate_on_pause", 0);
             m_consumer->set("0", serviceName.toLatin1().constData());
-            if (serviceName == "sdl_audio")
-#ifdef Q_OS_WIN
-                m_consumer->set("0.audio_buffer", 2048);
-#else
-                m_consumer->set("0.audio_buffer", 512);
-#endif
             if (!profile().progressive())
                 m_consumer->set("0.progressive", property("progressive").toBool());
             m_consumer->set("0.rescale", property("rescale").toString().toLatin1().constData());
             m_consumer->set("0.deinterlace_method", property("deinterlace_method").toString().toLatin1().constData());
-            m_consumer->set("0.buffer", 25);
-            m_consumer->set("0.prefill", 1);
+            m_consumer->set("0.buffer", qMax(25, qRound(profile().fps())));
+            m_consumer->set("0.prefill", qMax(1, qRound(profile().fps() / 25.0)));
             if (property("keyer").isValid())
                 m_consumer->set("0.keyer", property("keyer").toInt());
         }
         else {
-            if (serviceName == "sdl_audio")
-#ifdef Q_OS_WIN
-                m_consumer->set("audio_buffer", 2048);
-#else
-                m_consumer->set("audio_buffer", 512);
-#endif
             if (!profile().progressive())
                 m_consumer->set("progressive", property("progressive").toBool());
             m_consumer->set("rescale", property("rescale").toString().toLatin1().constData());
             m_consumer->set("deinterlace_method", property("deinterlace_method").toString().toLatin1().constData());
-            m_consumer->set("buffer", 25);
-            m_consumer->set("prefill", 1);
+            m_consumer->set("buffer", qMax(25, qRound(profile().fps())));
+            m_consumer->set("prefill", qMax(1, qRound(profile().fps() / 25.0)));
             if (property("keyer").isValid())
                 m_consumer->set("keyer", property("keyer").toInt());
         }
@@ -678,8 +693,12 @@ int GLWidget::reconfigure(bool isMulti)
 
 QPoint GLWidget::offset() const
 {
-    return QPoint(m_offset.x() - (MLT.profile().width()  * m_zoom -  width()) / 2,
-                  m_offset.y() - (MLT.profile().height() * m_zoom - height()) / 2);
+    if (m_zoom == 0.0) {
+        return QPoint(0,0);
+    } else {
+        return QPoint(m_offset.x() - (MLT.profile().width()  * m_zoom -  width()) / 2,
+                      m_offset.y() - (MLT.profile().height() * m_zoom - height()) / 2);
+    }
 }
 
 QImage GLWidget::image() const
@@ -716,6 +735,20 @@ void GLWidget::onFrameDisplayed(const SharedFrame &frame)
     m_mutex.lock();
     m_sharedFrame = frame;
     m_mutex.unlock();
+    bool isVui = frame.get_int(kShotcutVuiMetaProperty);
+    if (!isVui && source() != QmlUtilities::blankVui()) {
+        m_savedQmlSource = source();
+        setSource(QmlUtilities::blankVui());
+    } else if (isVui && !m_savedQmlSource.isEmpty() && source() != m_savedQmlSource) {
+        setSource(m_savedQmlSource);
+    }
+    quickWindow()->update();
+}
+
+void GLWidget::setGrid(int grid)
+{
+    m_grid = grid;
+    emit gridChanged();
     quickWindow()->update();
 }
 
@@ -742,12 +775,20 @@ void GLWidget::setOffsetY(int y)
 
 void GLWidget::setCurrentFilter(QmlFilter* filter, QmlMetadata* meta)
 {
-    rootContext()->setContextProperty("filter", filter);
     if (meta && QFile::exists(meta->vuiFilePath().toLocalFile())) {
+        filter->producer().set(kShotcutVuiMetaProperty, 1);
+        rootContext()->setContextProperty("filter", filter);
         setSource(meta->vuiFilePath());
+        refreshConsumer();
     } else {
         setBlankScene();
     }
+}
+
+void GLWidget::setSnapToGrid(bool snap)
+{
+    m_snapToGrid = snap;
+    emit snapToGridChanged();
 }
 
 void GLWidget::updateTexture(GLuint yName, GLuint uName, GLuint vName)
@@ -755,7 +796,6 @@ void GLWidget::updateTexture(GLuint yName, GLuint uName, GLuint vName)
     m_texture[0] = yName;
     m_texture[1] = uName;
     m_texture[2] = vName;
-    quickWindow()->update();
 }
 
 // MLT consumer-frame-show event handler
@@ -896,13 +936,11 @@ void FrameRenderer::showFrame(Mlt::Frame frame)
                 mlt_pool_release(image);
                 emit imageReady();
             }
-
-            emit textureReady(*textureId);
+            
             m_context->doneCurrent();
 
             // Save this frame for future use and to keep a reference to the GL Texture.
-            m_renderFrame = SharedFrame(frame);
-            qSwap(m_renderFrame, m_displayFrame);
+            m_displayFrame = SharedFrame(frame);
         }
         else {
             // Using a threaded OpenGL to upload textures.
@@ -919,20 +957,8 @@ void FrameRenderer::showFrame(Mlt::Frame frame)
             emit textureReady(m_displayTexture[0], m_displayTexture[1], m_displayTexture[2]);
             m_context->doneCurrent();
         }
-
-        // Throttle the frequency of frameDisplayed signals to prevent them from
-        // interfering with timely and smooth video updates.
-        int elapsedMSecs = QDateTime::currentMSecsSinceEpoch() - m_previousMSecs;
-        if (elapsedMSecs >= FRAMEDISPLAYED_MIN_MS) {
-            m_previousMSecs = QDateTime::currentMSecsSinceEpoch();
-            // The frame is now done being modified and can be shared with the rest
-            // of the application.
-            emit frameDisplayed(m_displayFrame);
-        }
-    } else {
-        // Non-threaded rendering
-        emit frameDisplayed(m_displayFrame);
     }
+    emit frameDisplayed(m_displayFrame);
 
     m_semaphore.release();
 }

@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2016 Meltytech, LLC
- * Author: Brian Matherly <pez4brian@yahoo.com>
+ * Copyright (c) 2013-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,11 +25,13 @@
 #include <QCursor>
 #include <QPalette>
 #include <QStyle>
+#include <QFileInfo>
 #ifdef Q_OS_WIN
 #include <QLocale>
 #else
 #include <clocale>
 #endif
+#include <limits>
 
 QmlApplication& QmlApplication::singleton()
 {
@@ -90,15 +91,6 @@ QString QmlApplication::OS()
 #endif
 }
 
-QString QmlApplication::numericLocale()
-{
-#ifdef Q_OS_WIN
-    return QLocale::system().name();
-#else
-    return QString::fromLatin1(::setlocale(LC_NUMERIC, NULL));
-#endif
-}
-
 QRect QmlApplication::mainWinRect()
 {
     return MAIN.geometry();
@@ -120,6 +112,45 @@ void QmlApplication::pasteFilters()
 {
     QScopedPointer<Mlt::Producer> producer(new Mlt::Producer(MAIN.filterController()->attachedModel()->producer()));
     MLT.pasteFilters(producer.data());
-    MLT.refreshConsumer();
+    emit QmlApplication::singleton().filtersPasted(MAIN.filterController()->attachedModel()->producer());
+}
+
+QString QmlApplication::timecode(int frames)
+{
+    if (MLT.producer() && MLT.producer()->is_valid())
+        return MLT.producer()->frames_to_time(frames, mlt_time_smpte);
+    else
+        return QString();
+}
+
+int QmlApplication::audioChannels()
+{
+    return MLT.audioChannels();
+}
+
+QString QmlApplication::getNextProjectFile(const QString& filename)
+{
+    QDir dir(MLT.projectFolder());
+    if (!MLT.projectFolder().isEmpty() && dir.exists()) {
+        QFileInfo info(filename);
+        QString basename = info.completeBaseName();
+        QString extension = info.suffix();
+        if (extension.isEmpty()) {
+            extension = basename;
+            basename = QString();
+        }
+        for (unsigned i = 1; i < std::numeric_limits<unsigned>::max(); i++) {
+            QString filename = QString::fromLatin1("%1%2.%3").arg(basename).arg(i).arg(extension);
+            if (!dir.exists(filename))
+                return dir.filePath(filename);
+        }
+    }
+    return QString();
+}
+
+bool QmlApplication::isProjectFolder()
+{
+    QDir dir(MLT.projectFolder());
+    return (!MLT.projectFolder().isEmpty() && dir.exists());
 }
 

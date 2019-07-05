@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2016-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,7 +27,7 @@ Item {
     id: lut3dRoot
     width: 350
     height: 100
-    property string settingsOpenPath: settings.openPath
+    property url settingsOpenPath: 'file:///' + settings.openPath
 
     SystemPalette { id: activePalette; colorGroup: SystemPalette.Active }
     Shotcut.File { id: lutFile }
@@ -50,7 +49,7 @@ Item {
 
         if (lutFile.exists()) {
             fileLabel.text = lutFile.fileName
-            fileLabelTip.text = lutFile.url
+            fileLabelTip.text = lutFile.filePath
         } else {
             console.log('lutFile.url = ' + lutFile.url)
             fileLabel.text = qsTr("No File Loaded")
@@ -72,7 +71,7 @@ Item {
             lut3dRoot.fileOpened(lutFile.path)
             fileLabel.text = lutFile.fileName
             fileLabel.color = activePalette.text
-            fileLabelTip.text = lutFile.url
+            fileLabelTip.text = lutFile.filePath
             filter.set('av.file', lutFile.url)
         }
     }

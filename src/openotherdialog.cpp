@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2012-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2012-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +18,7 @@
 #include "openotherdialog.h"
 #include "ui_openotherdialog.h"
 #include "mltcontroller.h"
+#include "settings.h"
 #include <Mlt.h>
 #include <QtWidgets>
 
@@ -32,6 +32,7 @@ OpenOtherDialog::OpenOtherDialog(QWidget *parent) :
     m_current = ui->networkWidget;
 
     QScopedPointer<Mlt::Properties> mltProducers(MLT.repository()->producers());
+    QScopedPointer<Mlt::Properties> mltFilters(MLT.repository()->filters());
     QTreeWidgetItem* group = new QTreeWidgetItem(ui->treeWidget, QStringList(tr("Network")));
     group->setData(0, Qt::UserRole, ui->networkTab->objectName());
     ui->treeWidget->setCurrentItem(group);
@@ -56,14 +57,14 @@ OpenOtherDialog::OpenOtherDialog(QWidget *parent) :
     item->setData(0, Qt::UserRole, ui->x11grabTab->objectName());
 #endif
 #elif defined(Q_OS_WIN)
-    QTreeWidgetItem* item = new QTreeWidgetItem(group, QStringList(tr("DirectShow")));
+    QTreeWidgetItem* item = new QTreeWidgetItem(group, QStringList(tr("Audio/Video Device")));
     item->setData(0, Qt::UserRole, ui->dshowVideoTab->objectName());
 #if ENABLE_SCREEN_CAPTURE
     item = new QTreeWidgetItem(group, QStringList(tr("Screen")));
     item->setData(0, Qt::UserRole, ui->gdigrabTab->objectName());
 #endif
 #elif defined(Q_OS_MAC)
-    QTreeWidgetItem* item = new QTreeWidgetItem(group, QStringList(tr("macOS A/V Device")));
+    QTreeWidgetItem* item = new QTreeWidgetItem(group, QStringList(tr("Audio/Video Device")));
     item->setData(0, Qt::UserRole, ui->avfoundationTab->objectName());
 #endif
 
@@ -72,6 +73,10 @@ OpenOtherDialog::OpenOtherDialog(QWidget *parent) :
     if (mltProducers->get_data("color")) {
         QTreeWidgetItem* item = new QTreeWidgetItem(group, QStringList(tr("Color")));
         item->setData(0, Qt::UserRole, ui->colorTab->objectName());
+        if (!Settings.playerGPU() && mltProducers->get_data("qtext") && mltFilters->get_data("dynamictext")) {
+            QTreeWidgetItem* item = new QTreeWidgetItem(group, QStringList(tr("Text")));
+            item->setData(0, Qt::UserRole, ui->textTab->objectName());
+        }
     }
     if (mltProducers->get_data("noise")) {
         QTreeWidgetItem* item = new QTreeWidgetItem(group, QStringList(tr("Noise")));
@@ -134,7 +139,7 @@ void OpenOtherDialog::load(Mlt::Producer* producer)
         else if (resource.startsWith("alsa:"))
             selectTreeWidget(tr("ALSA Audio"));
         else if (resource.startsWith("dshow:"))
-            selectTreeWidget(tr("DirectShow"));
+            selectTreeWidget(tr("Audio/Video Device"));
         else if (resource.startsWith("x11grab:") || resource.startsWith("gdigrab:"))
             selectTreeWidget(tr("Screen"));
         else if (service.startsWith("avformat"))
@@ -191,6 +196,8 @@ void OpenOtherDialog::on_treeWidget_currentItemChanged(QTreeWidgetItem *current,
                     m_current = ui->v4lWidget;
                 else if (w == ui->colorTab)
                     m_current = ui->colorWidget;
+                else if (w == ui->textTab)
+                    m_current = ui->textWidget;
                 else if (w == ui->noiseTab)
                     m_current = ui->noiseWidget;
                 else if (w == ui->isingTab)

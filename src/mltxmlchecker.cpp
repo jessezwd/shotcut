@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2014-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2014-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,6 +25,9 @@
 #include <QUrl>
 #include <QRegExp>
 #include <Logger.h>
+#include <clocale>
+
+static QString getPrefix(const QString& name, const QString& value);
 
 static bool isMltClass(const QStringRef& name)
 {
@@ -45,30 +47,20 @@ static bool isNetworkResource(const QString& string)
 
 static bool isNumericProperty(const QString& name)
 {
-    return name == "length" || name == "geometry" || name == "rect";
+    return  name == "length" || name == "geometry" ||
+            name == "rect" || name == "warp_speed";
 }
 
 MltXmlChecker::MltXmlChecker()
     : m_needsGPU(false)
+    , m_needsCPU(false)
     , m_hasEffects(false)
     , m_isCorrected(false)
-#ifdef Q_OS_MAC
-    // For some reason, on macOS, Shotcut does not honor the locale-defined
-    // decimal point, and MLT writes XML with LC_NUMERIC=C.
-    , m_decimalPoint(QLocale(QLocale::C).decimalPoint())
-#else
-    , m_decimalPoint(QLocale::system().decimalPoint())
-#endif
+    , m_usesLocale(false)
+    , m_decimalPoint('.')
     , m_tempFile(QDir::tempPath().append("/shotcut-XXXXXX.mlt"))
     , m_numericValueChanged(false)
 {
-    Mlt::Producer producer(MLT.profile(), "color", "black");
-    if (producer.is_valid()) {
-        const char* timeString = producer.get_length_time(mlt_time_clock);
-        if (qstrlen(timeString) >= 8) // HH:MM:SS.ms
-            m_decimalPoint = timeString[8];
-    }
-    LOG_DEBUG() << "decimal point" << m_decimalPoint;
     m_unlinkedFilesModel.setColumnCount(ColumnCount);
 }
 
@@ -94,11 +86,33 @@ bool MltXmlChecker::check(const QString& fileName)
                     if (a.name().toString().toUpper() != "LC_NUMERIC") {
                         m_newXml.writeAttribute(a);
                     } else {
+                        QString value = a.value().toString().toUpper();
+                        // Determine whether this document uses a non-POSIX/-generic numeric locale.
+                        m_usesLocale = (value != "" && value != "C" && value != "POSIX" && QLocale().decimalPoint() != '.');
                         // Upon correcting the document to conform to current system,
                         // update the declared LC_NUMERIC.
-                        m_newXml.writeAttribute("LC_NUMERIC", QLocale::system().name());
+                        m_newXml.writeAttribute("LC_NUMERIC", m_usesLocale? QLocale().name() : "C");
                     }
                 }
+                // We cannot apply the locale change to the session at this point
+                // because we are merely checking at this point and not loading.
+                // Save the current locale state.
+                bool isCLocale = (::qgetenv("LC_ALL").toUpper() == "C");
+                // Apply the chosen locale temporarily.
+                setLocale();
+                // Get the decimal point expected based on the current system
+                // locale or POSIX/C if the document is using POSIX.
+                m_decimalPoint = MLT.decimalPoint();
+                LOG_INFO() << "decimal point" << m_decimalPoint;
+                // Restore the current locale state.
+                if (isCLocale) {
+                    ::qputenv("LC_ALL", "C");
+                    ::setlocale(LC_ALL, "C");
+                } else {
+                    ::qunsetenv("LC_ALL");
+                    ::setlocale(LC_ALL, "");
+                }
+
                 readMlt();
                 m_newXml.writeEndElement();
                 m_newXml.writeEndDocument();
@@ -121,6 +135,18 @@ bool MltXmlChecker::check(const QString& fileName)
 QString MltXmlChecker::errorString() const
 {
     return m_xml.errorString();
+}
+
+void MltXmlChecker::setLocale()
+{
+    // Returns whether this document uses a non-POSIX/-generic numeric locale.
+    if (m_usesLocale) {
+        ::qunsetenv("LC_ALL");
+        ::setlocale(LC_ALL, "");
+    } else {
+        ::qputenv("LC_ALL", "C");
+        ::setlocale(LC_ALL, "C");
+    }
 }
 
 void MltXmlChecker::readMlt()
@@ -202,6 +228,12 @@ void MltXmlChecker::processProperties()
 #ifdef Q_OS_WIN
             fixVersion1701WindowsPathBug(p.second);
 #endif
+            // Check timewarp producer's resource property prefix.
+            QString prefix = getPrefix(p.first, p.second);
+            if (!prefix.isEmpty() && prefix != "plain:") {
+                if (checkNumericString(prefix))
+                    p.second = prefix + p.second.mid(p.second.indexOf(':') + 1);
+            }
             fixUnlinkedFile(p.second);
         }
         newProperties << MltProperty(p.first, p.second);
@@ -209,6 +241,7 @@ void MltXmlChecker::processProperties()
 
     if (mlt_class == "filter" || mlt_class == "transition" || mlt_class == "producer") {
         checkGpuEffects(mlt_service);
+        checkCpuEffects(mlt_service);
         checkUnlinkedFile(mlt_service);
 
         // Second pass: amend property values.
@@ -226,8 +259,8 @@ void MltXmlChecker::processProperties()
                 if (!m_resource.newDetail.isEmpty())
                     p.second = Util::baseName(m_resource.newDetail);
             } else if (p.first == kShotcutDetailProperty) {
-                if (!m_resource.newDetail.isEmpty())
-                    p.second = m_resource.newDetail;
+                // We no longer save this (leaks absolute paths).
+                p.second.clear();
             } else if (p.first == "audio_index" || p.first == "video_index") {
                 fixStreamIndex(p.second);
             }
@@ -350,25 +383,37 @@ void MltXmlChecker::checkGpuEffects(const QString& mlt_service)
         m_needsGPU = true;
 }
 
+void MltXmlChecker::checkCpuEffects(const QString& mlt_service)
+{
+    if (mlt_service.startsWith("dynamictext") || mlt_service.startsWith("vidstab"))
+        m_needsCPU = true;
+}
+
 void MltXmlChecker::checkUnlinkedFile(const QString& mlt_service)
 {
     // Check for an unlinked file.
+    const QString baseName = m_resource.info.baseName();
+    const QString filePath = QDir::toNativeSeparators(m_resource.info.filePath());
     // not the color producer
     if (!mlt_service.isEmpty() && mlt_service != "color" && mlt_service != "colour")
     // not a builtin luma wipe file
-    if (mlt_service != "luma" || !m_resource.info.baseName().startsWith('%'))
+    if ((mlt_service != "luma" && mlt_service != "movit.luma_mix") || !baseName.startsWith('%'))
+    // not a Stabilize filter without Analyze results
+    if (baseName != "vidstab.trf")
     // not the generic <producer> resource
-    if (m_resource.info.baseName() != "<producer>")
+    if (baseName != "<producer>")
     // not a URL
     if (!m_resource.info.filePath().isEmpty() && !isNetworkResource(m_resource.info.filePath()))
+    // not an image sequence
+    if ((mlt_service != "pixbuf" && mlt_service != "qimage") || baseName.indexOf('%') == -1)
     // file does not exist
     if (!m_resource.info.exists())
     // not already in the model
-    if (m_unlinkedFilesModel.findItems(m_resource.info.filePath(),
+    if (m_unlinkedFilesModel.findItems(filePath,
             Qt::MatchFixedString | Qt::MatchCaseSensitive).isEmpty()) {
         LOG_ERROR() << "file not found: " << m_resource.info.filePath();
         QIcon icon(":/icons/oxygen/32x32/status/task-reject.png");
-        QStandardItem* item = new QStandardItem(icon, m_resource.info.filePath());
+        QStandardItem* item = new QStandardItem(icon, filePath);
         item->setToolTip(item->text());
         item->setData(m_resource.hash, ShotcutHashRole);
         m_unlinkedFilesModel.appendRow(item);
@@ -381,12 +426,16 @@ bool MltXmlChecker::fixUnlinkedFile(QString& value)
     for (int row = 0; row < m_unlinkedFilesModel.rowCount(); ++row) {
         const QStandardItem* replacement = m_unlinkedFilesModel.item(row, ReplacementColumn);
         if (replacement && !replacement->text().isEmpty() &&
-                m_unlinkedFilesModel.item(row, MissingColumn)->text() == m_resource.info.filePath()) {
+                m_unlinkedFilesModel.item(row, MissingColumn)->text() == QDir::toNativeSeparators(m_resource.info.filePath())) {
             m_resource.info.setFile(replacement->text());
             m_resource.newDetail = replacement->text();
             m_resource.newHash = replacement->data(ShotcutHashRole).toString();
+            value = QDir::fromNativeSeparators(replacement->text());
+            // Convert to relative path if possible.
+            if (value.startsWith(m_basePath + "/"))
+                value = value.mid(m_basePath.size() + 1);
             // Restore special prefix such as "plain:" or speed value.
-            value = replacement->text().prepend(m_resource.prefix);
+            value.prepend(m_resource.prefix);
             m_isCorrected = true;
             return true;
         }

@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2015 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,11 +22,14 @@
 #include "qmltypes/qmlutilities.h"
 #include "qmltypes/qmlview.h"
 #include "qmltypes/qmlfile.h"
+#include "qmltypes/qmlfilter.h"
 #include "qmltypes/qmlhtmleditor.h"
 #include "qmltypes/qmlmetadata.h"
 #include "qmltypes/timelineitems.h"
+#include "qmltypes/webvfxtemplatesmodel.h"
 #include "settings.h"
 #include "models/metadatamodel.h"
+#include "models/keyframesmodel.h"
 #include <QCoreApplication>
 #include <QSysInfo>
 #include <QCursor>
@@ -43,14 +45,19 @@ QmlUtilities::QmlUtilities(QObject *parent) :
 void QmlUtilities::registerCommonTypes()
 {
     qmlRegisterType<QmlFile>("org.shotcut.qml", 1, 0, "File");
+    qmlRegisterType<QmlFilter>("org.shotcut.qml", 1, 0, "Filter");
     qmlRegisterType<QmlHtmlEditor>("org.shotcut.qml", 1, 0, "HtmlEditor");
     qmlRegisterType<QmlMetadata>("org.shotcut.qml", 1, 0, "Metadata");
+    qmlRegisterType<QmlKeyframesMetadata>();
+    qmlRegisterType<QmlKeyframesParameter>("org.shotcut.qml", 1,0, "Parameter");
+    qmlRegisterType<KeyframesModel>("org.shotcut.qml", 1,0, "KeyframesModel");
     qmlRegisterType<QmlUtilities>("org.shotcut.qml", 1, 0, "Utilities");
     // MetadataModel is registered to access its MetadataFilter enum.
     qmlRegisterUncreatableType<MetadataModel>("org.shotcut.qml", 1, 0, "MetadataModel",
                                               "You cannot create a MetadataModel from QML.");
     qmlRegisterType<ColorPickerItem>("Shotcut.Controls", 1, 0, "ColorPickerItem");
     qmlRegisterType<ColorWheelItem>("Shotcut.Controls", 1, 0, "ColorWheelItem");
+    qmlRegisterType<WebvfxTemplatesModel>("org.shotcut.qml", 1, 0, "WebvfxTemplatesModel");
     registerTimelineItems();
 }
 
@@ -64,10 +71,15 @@ void QmlUtilities::setCommonProperties(QQmlContext* context)
 QDir QmlUtilities::qmlDir()
 {
     QDir dir(qApp->applicationDirPath());
-#if defined(Q_OS_UNIX) && !defined(Q_OS_MAC)
+#if defined(Q_OS_MAC)
     dir.cdUp();
-#endif
+    dir.cd("Resources");
+#else
+    #if defined(Q_OS_UNIX)
+    dir.cdUp();
+    #endif
     dir.cd("share");
+#endif
     dir.cd("shotcut");
     dir.cd("qml");
     return dir;
@@ -83,5 +95,9 @@ QQmlEngine * QmlUtilities::sharedEngine()
 
 QUrl QmlUtilities::blankVui()
 {
-    return QUrl("qrc:/src/qml/vui_droparea.qml");
+    QDir dir = qmlDir();
+    dir.cd("modules");
+    dir.cd("Shotcut");
+    dir.cd("Controls");
+    return QUrl::fromLocalFile(dir.absoluteFilePath("VuiBase.qml"));
 }

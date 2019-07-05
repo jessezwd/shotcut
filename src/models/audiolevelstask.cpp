@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -39,10 +38,9 @@ static void deleteQVariantList(QVariantList* list)
     delete list;
 }
 
-AudioLevelsTask::AudioLevelsTask(Mlt::Producer& producer, MultitrackModel* model, const QModelIndex& index)
+AudioLevelsTask::AudioLevelsTask(Mlt::Producer& producer, QObject* object, const QModelIndex& index)
     : QRunnable()
-    , m_model(model)
-    , m_tempProducer(0)
+    , m_object(object)
     , m_isCanceled(false)
     , m_isForce(false)
 {
@@ -51,15 +49,21 @@ AudioLevelsTask::AudioLevelsTask(Mlt::Producer& producer, MultitrackModel* model
 
 AudioLevelsTask::~AudioLevelsTask()
 {
-    delete m_tempProducer;
     foreach (ProducerAndIndex p, m_producers)
         delete p.first;
 }
 
-void AudioLevelsTask::start(Mlt::Producer& producer, MultitrackModel* model, const QModelIndex& index, bool force)
+void AudioLevelsTask::start(Mlt::Producer& producer, QObject* object, const QModelIndex& index, bool force)
 {
-    if (Settings.timelineShowWaveforms() && producer.is_valid() && index.isValid()) {
-        AudioLevelsTask* task = new AudioLevelsTask(producer, model, index);
+    if (Settings.timelineShowWaveforms() && producer.is_valid()) {
+
+        QString serviceName = producer.get("mlt_service");
+        if (DB.isShutdown()
+            || serviceName == "pixbuf" || serviceName == "qimage" || serviceName == "webvfx"
+            || serviceName == "color"|| serviceName.startsWith("frei0r"))
+            return;
+
+        AudioLevelsTask* task = new AudioLevelsTask(producer, object, index);
         tasksListMutex.lock();
         // See if there is already a task for this MLT service and resource.
         foreach (AudioLevelsTask* t, tasksList) {
@@ -98,7 +102,8 @@ bool AudioLevelsTask::operator==(AudioLevelsTask &b)
     if (!m_producers.isEmpty() && !b.m_producers.isEmpty()) {
         Mlt::Producer* a_producer = m_producers.first().first;
         Mlt::Producer* b_producer = b.m_producers.first().first;
-        return !qstrcmp(a_producer->get("resource"), b_producer->get("resource"));
+        return a_producer && a_producer->is_valid() && b_producer && b_producer->is_valid()
+                && !qstrcmp(a_producer->get("resource"), b_producer->get("resource"));
     }
     return false;
 }
@@ -111,8 +116,8 @@ Mlt::Producer* AudioLevelsTask::tempProducer()
             service = "avformat";
         else if (service.startsWith("xml"))
             service = "xml-nogl";
-        m_tempProducer = new Mlt::Producer(m_profile, service.toUtf8().constData(),
-            m_producers.first().first->get("resource"));
+        m_tempProducer.reset(new Mlt::Producer(m_profile, service.toUtf8().constData(),
+            m_producers.first().first->get("resource")));
         if (m_tempProducer->is_valid()) {
             Mlt::Filter channels(m_profile, "audiochannels");
             Mlt::Filter converter(m_profile, "audioconvert");
@@ -123,7 +128,7 @@ Mlt::Producer* AudioLevelsTask::tempProducer()
             LOG_DEBUG() << "generating audio levels for" << m_tempProducer->get("resource");
         }
     }
-    return m_tempProducer;
+    return m_tempProducer.data();
 }
 
 QString AudioLevelsTask::cacheKey()
@@ -145,7 +150,7 @@ void AudioLevelsTask::run()
     // 2 channels interleaved of uchar values
     QVariantList levels;
     QImage image = DB.getThumbnail(cacheKey());
-    if (image.isNull() || m_isForce) {
+    if ((image.isNull() || m_isForce) && !DB.isFailing()) {
         const char* key[2] = { "meta.media.audio_level.0", "meta.media.audio_level.1"};
         QTime updateTime; updateTime.start();
         // TODO: use project channel count
@@ -177,7 +182,8 @@ void AudioLevelsTask::run()
                 foreach (ProducerAndIndex p, m_producers) {
                     QVariantList* levelsCopy = new QVariantList(levels);
                     p.first->set(kAudioLevelsProperty, levelsCopy, 0, (mlt_destructor) deleteQVariantList);
-                    m_model->audioLevelsReady(p.second);
+                    if (-1 != m_object->metaObject()->indexOfMethod("audioLevelsReady(QModelIndex)"))
+                        QMetaObject::invokeMethod(m_object, "audioLevelsReady", Q_ARG(const QModelIndex&, p.second));
                 }
             }
         }
@@ -210,7 +216,7 @@ void AudioLevelsTask::run()
                 DB.putThumbnail(cacheKey(), image);
             }
         }
-    } else if (!m_isCanceled) {
+    } else if (!m_isCanceled && !image.isNull()) {
         // convert cached image
         int channels = 2;
         int n = image.width() * image.height();
@@ -237,7 +243,8 @@ void AudioLevelsTask::run()
         foreach (ProducerAndIndex p, m_producers) {
             QVariantList* levelsCopy = new QVariantList(levels);
             p.first->set(kAudioLevelsProperty, levelsCopy, 0, (mlt_destructor) deleteQVariantList);
-            m_model->audioLevelsReady(p.second);
+            if (-1 != m_object->metaObject()->indexOfMethod("audioLevelsReady(QModelIndex)"))
+                QMetaObject::invokeMethod(m_object, "audioLevelsReady", Q_ARG(const QModelIndex&, p.second));
         }
     }
 }

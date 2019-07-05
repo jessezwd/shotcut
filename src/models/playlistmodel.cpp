@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2012-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2012-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +18,7 @@
 #include "playlistmodel.h"
 #include "util.h"
 #include "shotcut_mlt_properties.h"
+#include <QDateTime>
 #include <QUrl>
 #include <QImage>
 #include <QColor>
@@ -29,6 +29,7 @@
 #include <QPalette>
 #include <QCryptographicHash>
 #include <QScopedPointer>
+#include <QDir>
 
 #include "settings.h"
 #include "database.h"
@@ -229,9 +230,18 @@ QVariant PlaylistModel::data(const QModelIndex &index, int role) const
         } else {
             // Prefer detail or full path for tooltip
             if (info->producer && info->producer->is_valid())
-                result = info->producer->get("shotcut:detail");
-            if (result.isNull())
-                result = QString::fromUtf8(info->resource);
+                result = info->producer->get(kShotcutDetailProperty);
+            if (result.isNull()) {
+                if (!::qstrcmp(info->producer->get("mlt_service"), "timewarp"))
+                    result = QString::fromUtf8(info->producer->get("warp_resource"));
+                else
+                    result = QString::fromUtf8(info->resource);
+                if (!result.isEmpty() && QFileInfo(result).isRelative()) {
+                    QString basePath = QFileInfo(MAIN.fileName()).canonicalPath();
+                    result = QFileInfo(basePath, result).filePath();
+                }
+                result = QDir::toNativeSeparators(result);
+            }
             if ((result.isNull() || Util::baseName(result) == "<producer>") && info->producer && info->producer->is_valid())
                 result = info->producer->get(kShotcutCaptionProperty);
             if (result.isNull() && info->producer && info->producer->is_valid())
@@ -254,6 +264,18 @@ QVariant PlaylistModel::data(const QModelIndex &index, int role) const
     case FIELD_START:
         if (info->producer && info->producer->is_valid()) {
             return info->producer->frames_to_time(info->start);
+        }
+        else
+            return "";
+    case FIELD_DATE:
+        if (info->producer && info->producer->is_valid()) {
+            int64_t ms = info->producer->get_creation_time();
+            if (!ms) {
+                return "";
+            }
+            else {
+               return QDateTime::fromMSecsSinceEpoch(ms).toString("yyyy-MM-dd HH:mm:ss");
+            }
         }
         else
             return "";
@@ -347,6 +369,8 @@ QVariant PlaylistModel::headerData(int section, Qt::Orientation orientation, int
             return tr("Duration");
         case COLUMN_START:
             return tr("Start");
+        case COLUMN_DATE:
+            return tr("Date");
         default:
             break;
         }
@@ -387,6 +411,44 @@ bool PlaylistModel::moveRows(const QModelIndex &, int sourceRow, int count, cons
     Q_ASSERT(count == 1);
     move(sourceRow, destinationChild);
     return true;
+}
+
+void PlaylistModel::sort(int column, Qt::SortOrder order)
+{
+    if (!m_playlist) return;
+
+    int index = 0;
+    int count = rowCount();
+    if (count < 2) return;
+
+    // Create a list mapping values to their original index.
+    QVector<QPair<QString, int>> indexMap(count);
+    for (index = 0; index < count; index++) {
+        QModelIndex modelIndex = createIndex(index, column);
+        QString key = data(modelIndex, Qt::DisplayRole).toString();
+        indexMap[index] = qMakePair(key, index);
+    }
+    // Sort the list.
+    std::sort(indexMap.begin(), indexMap.end());
+
+    // Move the sorted indexes into a list to be used to reorder the playlist.
+    QVector<int> indexList(count);
+    QVector<QPair<QString, int>>::iterator itr = indexMap.begin();
+    index = 0;
+    while (itr != indexMap.end()) {
+        if (order == Qt::AscendingOrder) {
+            indexList[index] = itr->second;
+        } else {
+            indexList[count - index - 1] = itr->second;
+        }
+        index++;
+        itr++;
+    }
+
+    m_playlist->reorder(indexList.data());
+
+    emit dataChanged(createIndex(0, 0), createIndex(rowCount(), columnCount()));
+    emit modified();
 }
 
 QStringList PlaylistModel::mimeTypes() const
@@ -519,7 +581,7 @@ void PlaylistModel::load()
     emit loaded();
 }
 
-void PlaylistModel::append(Mlt::Producer& producer)
+void PlaylistModel::append(Mlt::Producer& producer, bool emitModified)
 {
     createIfNeeded();
     int count = m_playlist->count();
@@ -527,11 +589,12 @@ void PlaylistModel::append(Mlt::Producer& producer)
     int out = producer.get_out();
     producer.set_in_and_out(0, producer.get_length() - 1);
     QThreadPool::globalInstance()->start(
-        new UpdateThumbnailTask(this, producer, in, out, count));
+        new UpdateThumbnailTask(this, producer, in, out, count), 1);
     beginInsertRows(QModelIndex(), count, count);
     m_playlist->append(producer, in, out);
     endInsertRows();
-    emit modified();
+    if (emitModified)
+        emit modified();
 }
 
 void PlaylistModel::insert(Mlt::Producer& producer, int row)
@@ -541,7 +604,7 @@ void PlaylistModel::insert(Mlt::Producer& producer, int row)
     int out = producer.get_out();
     producer.set_in_and_out(0, producer.get_length() - 1);
     QThreadPool::globalInstance()->start(
-        new UpdateThumbnailTask(this, producer, in, out, row));
+        new UpdateThumbnailTask(this, producer, in, out, row), 1);
     beginInsertRows(QModelIndex(), row, row);
     m_playlist->insert(producer, row, in, out);
     endInsertRows();
@@ -567,7 +630,7 @@ void PlaylistModel::update(int row, Mlt::Producer& producer)
     int out = producer.get_out();
     producer.set_in_and_out(0, producer.get_length() - 1);
     QThreadPool::globalInstance()->start(
-        new UpdateThumbnailTask(this, producer, in, out, row));
+        new UpdateThumbnailTask(this, producer, in, out, row), 1);
     m_playlist->remove(row);
     m_playlist->insert(producer, row, in, out);
     emit dataChanged(createIndex(row, 0), createIndex(row, columnCount()));
@@ -633,7 +696,7 @@ void PlaylistModel::refreshThumbnails()
             Mlt::ClipInfo* info = m_playlist->clip_info(i);
             if (info && info->producer && info->producer->is_valid()) {
                 QThreadPool::globalInstance()->start(
-                    new UpdateThumbnailTask(this, *info->producer, info->frame_in, info->frame_out, i));
+                    new UpdateThumbnailTask(this, *info->producer, info->frame_in, info->frame_out, i), 1);
             }
             delete info;
         }

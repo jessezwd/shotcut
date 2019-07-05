@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2015 Meltytech, LLC
- * Author: Lauren Dennedy
+ * Copyright (c) 2015-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -201,6 +200,7 @@ Item {
                 id: bassLabel
                 text: qsTr('Bass')
                 anchors.horizontalCenter: parent.horizontalCenter
+                ToolTip { text: '100 Hz' }
             }
         }
 
@@ -220,8 +220,9 @@ Item {
                 ToolTip { text: '%1 dB'.arg(Math.round(parent.value * 10) / 10) }
             }
             Label {
-                text: qsTr('Middle')
+                text: qsTr('Middle', 'Bass & Treble audio filter')
                 anchors.horizontalCenter: parent.horizontalCenter
+                ToolTip { text: '1000 Hz' }
             }
         }
 
@@ -243,6 +244,7 @@ Item {
             Label {
                 text: qsTr('Treble')
                 anchors.horizontalCenter: parent.horizontalCenter
+                ToolTip { text: '10000 Hz' }
             }
         }
 

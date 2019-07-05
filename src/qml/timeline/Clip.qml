@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -44,6 +43,8 @@ Rectangle {
     property bool selected: false
     property string hash: ''
     property double speed: 1.0
+    property string audioIndex: ''
+    property bool isTrackMute: false
 
     signal clicked(var clip)
     signal moved(var clip)
@@ -84,10 +85,11 @@ Rectangle {
         parent = track
         isAudio = track.isAudio
         height = track.height
-        generateWaveform()
+        generateWaveform(false)
     }
 
-    function generateWaveform() {
+    function generateWaveform(force) {
+        if (!waveform.visible && !force) return
         // This is needed to make the model have the correct count.
         // Model as a property expression is not working in all cases.
         waveformRepeater.model = Math.ceil(waveform.innerWidth / waveform.maxWidth)
@@ -103,7 +105,7 @@ Rectangle {
         }
     }
 
-    onAudioLevelsChanged: generateWaveform()
+    onAudioLevelsChanged: generateWaveform(false)
 
     Image {
         id: outThumbnail
@@ -142,7 +144,7 @@ Rectangle {
 
     Row {
         id: waveform
-        visible: !isBlank && settings.timelineShowWaveforms
+        visible: !isBlank && settings.timelineShowWaveforms && !isTrackMute && (parseInt(audioIndex) > -1 || audioIndex === 'all')
         height: isAudio? parent.height : parent.height / 2
         anchors.left: parent.left
         anchors.bottom: parent.bottom
@@ -246,7 +248,10 @@ Rectangle {
         anchors.fill: parent
         enabled: isBlank
         acceptedButtons: Qt.RightButton
-        onClicked: menu.show()
+        onClicked: {
+            timeline.position = timeline.position // pause
+            menu.show()
+        }
     }
 
     MouseArea {
@@ -258,6 +263,10 @@ Rectangle {
         drag.axis: Drag.XAxis
         property int startX
         onPressed: {
+            if (!doubleClickTimer.running) {
+                doubleClickTimer.restart()
+                doubleClickTimer.isFirstRelease = true
+            }
             root.stopScrolling = true
             originalX = parent.x
             originalTrackIndex = trackIndex
@@ -274,19 +283,29 @@ Rectangle {
             parent.dragged(clipRoot, mouse)
         }
         onReleased: {
-            root.stopScrolling = false
-            parent.y = 0
-            var delta = parent.x - startX
-            if (Math.abs(delta) >= 1.0 || trackIndex !== originalTrackIndex) {
-                parent.moved(clipRoot)
-                originalX = parent.x
-                originalTrackIndex = trackIndex
+            if (!doubleClickTimer.isFirstRelease && doubleClickTimer.running) {
+                timeline.position = Math.round(clipRoot.x / multitrack.scaleFactor)
+                doubleClickTimer.stop()
             } else {
-                parent.dropped(clipRoot)
+                doubleClickTimer.isFirstRelease = false
+
+                root.stopScrolling = false
+                parent.y = 0
+                var delta = parent.x - startX
+                if (Math.abs(delta) >= 1.0 || trackIndex !== originalTrackIndex) {
+                    parent.moved(clipRoot)
+                    originalX = parent.x
+                    originalTrackIndex = trackIndex
+                } else {
+                    parent.dropped(clipRoot)
+                }
             }
         }
-        onDoubleClicked: timeline.position = clipRoot.x / multitrack.scaleFactor
-        onWheel: zoomByWheel(wheel)
+        Timer {
+            id: doubleClickTimer
+            interval: 500 //ms
+            property bool isFirstRelease
+        }
 
         MouseArea {
             anchors.fill: parent
@@ -296,7 +315,12 @@ Rectangle {
                 (fadeInMouseArea.drag.active || fadeOutMouseArea.drag.active)? Qt.PointingHandCursor :
                 drag.active? Qt.ClosedHandCursor :
                 isBlank? Qt.ArrowCursor : Qt.OpenHandCursor
-            onClicked: menu.show()
+            onClicked: {
+                timeline.position = timeline.position // pause
+                clipRoot.forceActiveFocus();
+                clipRoot.clicked(clipRoot)
+                menu.show()
+            }
         }
     }
 
@@ -313,13 +337,14 @@ Rectangle {
     Rectangle {
         id: fadeInControl
         enabled: !isBlank && !isTransition
-        anchors.left: fadeInTriangle.width > radius? undefined : fadeInTriangle.left
-        anchors.horizontalCenter: fadeInTriangle.width > radius? fadeInTriangle.right : undefined
+        anchors.left: fadeInTriangle.right
         anchors.top: fadeInTriangle.top
+        anchors.leftMargin: Math.min(clipRoot.width - fadeInTriangle.width - width, 0)
         anchors.topMargin: -3
-        width: 15
-        height: 15
-        radius: 7.5
+        width: 14
+        height: 14
+        radius: 7
+        z: 1
         color: 'black'
         border.width: 2
         border.color: 'white'
@@ -332,6 +357,8 @@ Rectangle {
             cursorShape: Qt.PointingHandCursor
             drag.target: parent
             drag.axis: Drag.XAxis
+            drag.minimumX: 0
+            drag.maximumX: clipRoot.width
             property int startX
             property int startFadeIn
             onEntered: parent.opacity = 0.7
@@ -341,41 +368,38 @@ Rectangle {
                 startX = parent.x
                 startFadeIn = fadeIn
                 parent.anchors.left = undefined
-                parent.anchors.horizontalCenter = undefined
                 parent.opacity = 1
                 // trackRoot.clipSelected(clipRoot, trackRoot) TODO
             }
             onReleased: {
                 root.stopScrolling = false
-                if (fadeInTriangle.width > parent.radius)
-                    parent.anchors.horizontalCenter = fadeInTriangle.right
-                else
-                    parent.anchors.left = fadeInTriangle.left
+                parent.anchors.left = fadeInTriangle.right
                 bubbleHelp.hide()
             }
             onPositionChanged: {
                 if (mouse.buttons === Qt.LeftButton) {
                     var delta = Math.round((parent.x - startX) / timeScale)
-                    var duration = startFadeIn + delta
+                    var duration = Math.min(Math.max(0, startFadeIn + delta), clipDuration)
                     timeline.fadeIn(trackIndex, index, duration)
 
                     // Show fade duration as time in a "bubble" help.
-                    var s = timeline.timecode(Math.max(duration, 0))
+                    var s = application.timecode(duration)
                     bubbleHelp.show(clipRoot.x, trackRoot.y + clipRoot.height, s.substring(6))
                 }
             }
+            onDoubleClicked: timeline.fadeIn(trackIndex, index, (fadeIn > 0) ? 0 : Math.round(profile.fps))
         }
         SequentialAnimation on scale {
             loops: Animation.Infinite
             running: fadeInMouseArea.containsMouse
             NumberAnimation {
                 from: 1.0
-                to: 0.5
+                to: 1.5
                 duration: 250
                 easing.type: Easing.InOutQuad
             }
             NumberAnimation {
-                from: 0.5
+                from: 1.5
                 to: 1.0
                 duration: 250
                 easing.type: Easing.InOutQuad
@@ -384,7 +408,7 @@ Rectangle {
     }
 
     TimelineTriangle {
-        id: fadeOutCanvas
+        id: fadeOutTriangle
         visible: !isBlank && !isTransition
         width: parent.fadeOut * timeScale
         height: parent.height - parent.border.width * 2
@@ -392,18 +416,18 @@ Rectangle {
         anchors.top: parent.top
         anchors.margins: parent.border.width
         opacity: 0.5
-        transform: Scale { xScale: -1; origin.x: fadeOutCanvas.width / 2}
+        transform: Scale { xScale: -1; origin.x: fadeOutTriangle.width / 2}
     }
     Rectangle {
         id: fadeOutControl
         enabled: !isBlank && !isTransition
-        anchors.right: fadeOutCanvas.width > radius? undefined : fadeOutCanvas.right
-        anchors.horizontalCenter: fadeOutCanvas.width > radius? fadeOutCanvas.left : undefined
-        anchors.top: fadeOutCanvas.top
+        anchors.right: fadeOutTriangle.left
+        anchors.top: fadeOutTriangle.top
+        anchors.rightMargin: Math.min(clipRoot.width - fadeOutTriangle.width - width, 0)
         anchors.topMargin: -3
-        width: 15
-        height: 15
-        radius: 7.5
+        width: 14
+        height: 14
+        radius: 7
         color: 'black'
         border.width: 2
         border.color: 'white'
@@ -416,6 +440,8 @@ Rectangle {
             cursorShape: Qt.PointingHandCursor
             drag.target: parent
             drag.axis: Drag.XAxis
+            drag.minimumX: -width - 1
+            drag.maximumX: clipRoot.width
             property int startX
             property int startFadeOut
             onEntered: parent.opacity = 0.7
@@ -425,40 +451,37 @@ Rectangle {
                 startX = parent.x
                 startFadeOut = fadeOut
                 parent.anchors.right = undefined
-                parent.anchors.horizontalCenter = undefined
                 parent.opacity = 1
             }
             onReleased: {
                 root.stopScrolling = false
-                if (fadeOutCanvas.width > parent.radius)
-                    parent.anchors.horizontalCenter = fadeOutCanvas.left
-                else
-                    parent.anchors.right = fadeOutCanvas.right
+                parent.anchors.right = fadeOutTriangle.left
                 bubbleHelp.hide()
             }
             onPositionChanged: {
                 if (mouse.buttons === Qt.LeftButton) {
                     var delta = Math.round((startX - parent.x) / timeScale)
-                    var duration = startFadeOut + delta
+                    var duration = Math.min(Math.max(0, startFadeOut + delta), clipDuration)
                     timeline.fadeOut(trackIndex, index, duration)
 
                     // Show fade duration as time in a "bubble" help.
-                    var s = timeline.timecode(Math.max(duration, 0))
+                    var s = application.timecode(duration)
                     bubbleHelp.show(clipRoot.x + clipRoot.width, trackRoot.y + clipRoot.height, s.substring(6))
                 }
             }
+            onDoubleClicked: timeline.fadeOut(trackIndex, index, (fadeOut > 0) ? 0 : Math.round(profile.fps))
         }
         SequentialAnimation on scale {
             loops: Animation.Infinite
             running: fadeOutMouseArea.containsMouse
             NumberAnimation {
                 from: 1.0
-                to: 0.5
+                to: 1.5
                 duration: 250
                 easing.type: Easing.InOutQuad
             }
             NumberAnimation {
-                from: 0.5
+                from: 1.5
                 to: 1.0
                 duration: 250
                 easing.type: Easing.InOutQuad
@@ -492,6 +515,7 @@ Rectangle {
                 startX = mapToItem(null, x, y).x
                 originalX = 0 // reusing originalX to accumulate delta for bubble help
                 parent.anchors.left = undefined
+                originalClipIndex = index
             }
             onReleased: {
                 root.stopScrolling = false
@@ -566,7 +590,7 @@ Rectangle {
     Menu {
         id: menu
         function show() {
-            mergeItem.visible = timeline.mergeClipWithNext(trackIndex, index, true)
+//            mergeItem.visible = timeline.mergeClipWithNext(trackIndex, index, true)
             popup()
         }
         MenuItem {
@@ -608,13 +632,28 @@ Rectangle {
         }
         MenuItem {
             id: mergeItem
+            visible: false
             text: qsTr('Merge with next clip')
             onTriggered: timeline.mergeClipWithNext(trackIndex, index, false)
         }
         MenuItem {
-            visible: !isBlank && !isTransition
+            visible: !isBlank && !isTransition && !isAudio && (parseInt(audioIndex) > -1 || audioIndex === 'all')
+            text: qsTr('Detach Audio')
+            onTriggered: timeline.detachAudio(trackIndex, index)
+        }
+        MenuItem {
+            visible: !isBlank && !isTransition && settings.timelineShowWaveforms
             text: qsTr('Rebuild Audio Waveform')
             onTriggered: timeline.remakeAudioLevels(trackIndex, index)
+        }
+        MenuItem {
+            visible: !isBlank
+            text: qsTr('Properties')
+            onTriggered: {
+                clipRoot.forceActiveFocus()
+                clipRoot.clicked(clipRoot)
+                timeline.openProperties()
+            }
         }
         onPopupVisibleChanged: {
             if (visible && application.OS !== 'OS X' && __popupGeometry.height > 0) {

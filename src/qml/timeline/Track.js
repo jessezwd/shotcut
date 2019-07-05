@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,6 +16,7 @@
  */
 
 var SNAP = 10
+var SNAP_TRIM = 4
 
 function snapClip(clip, repeater) {
     var left = clip.x
@@ -26,7 +26,7 @@ function snapClip(clip, repeater) {
         clip.x = 0
         return
     } else {
-        // Snap to other clips.
+        // Snap to other clips on the same track.
         for (var i = 0; i < repeater.count; i++) {
             // Do not snap to self.
             if (i === clip.DelegateModel.itemsIndex && clip.trackIndex === repeater.itemAt(i).trackIndex)
@@ -63,35 +63,52 @@ function snapClip(clip, repeater) {
     }
 }
 
-function snapTrimIn(clip, delta) {
-    var x = clip.x + delta
+function snapTrimIn(clip, delta, timeline, trackIndex) {
+    var x = clip.x + delta * timeScale
     var cursorX = scrollView.flickableItem.contentX + cursor.x
-    if (false) {
-        // Snap to other clips.
+    if (delta < 0) {
+        // Snap to other clips on the same track.
         for (var i = 0; i < repeater.count; i++) {
-            if (i === clip.DelegateModel.itemsIndex || repeater.itemAt(i).isBlank)
+            if (i === clip.DelegateModel.itemsIndex || repeater.itemAt(i).isBlank || repeater.itemAt(i).isTransition)
                 continue
             var itemLeft = repeater.itemAt(i).x
             var itemRight = itemLeft + repeater.itemAt(i).width
-            if (x > itemLeft - SNAP && x < itemLeft + SNAP)
+            if (x > itemLeft - SNAP_TRIM && x < itemLeft + SNAP_TRIM)
                 return Math.round((itemLeft - clip.x) / timeScale)
-            else if (x > itemRight - SNAP && x < itemRight + SNAP)
+            else if (x > itemRight - SNAP_TRIM && x < itemRight + SNAP_TRIM)
                 return Math.round((itemRight - clip.x) / timeScale)
         }
     }
-    if (x > -SNAP && x < SNAP) {
+    // Snap to clips on other tracks.
+    for (var j = 0; j < timeline.trackCount; j++) {
+        if (j !== trackIndex) {
+            var track = timeline.trackAt(j)
+            for (i = 0; i < track.clipCount; i++) {
+                var item = track.clipAt(i)
+                if (item.isBlank)
+                    continue
+                itemLeft = item.x
+                itemRight = itemLeft + item.width
+                if (x > itemLeft - SNAP_TRIM && x < itemLeft + SNAP_TRIM)
+                    return Math.round((itemLeft - clip.x) / timeScale)
+                else if (x > itemRight - SNAP_TRIM && x < itemRight + SNAP_TRIM)
+                    return Math.round((itemRight - clip.x) / timeScale)
+            }
+        }
+    }
+    if (x > -SNAP_TRIM && x < SNAP_TRIM) {
         // Snap around origin.
         return Math.round(-clip.x / timeScale)
-    } else if (x > cursorX - SNAP && x < cursorX + SNAP) {
+    } else if (x > cursorX - SNAP_TRIM && x < cursorX + SNAP_TRIM) {
         // Snap around cursor/playhead.
         return Math.round((cursorX - clip.x) / timeScale)
     }
     return delta
 }
 
-function snapTrimOut(clip, delta) {
+function snapTrimOut(clip, delta, timeline, trackIndex) {
     var rightEdge = clip.x + clip.width
-    var x = rightEdge - delta
+    var x = rightEdge - delta * timeScale
     var cursorX = scrollView.flickableItem.contentX + cursor.x
     if (delta < 0) {
         // Snap to other clips.
@@ -100,13 +117,30 @@ function snapTrimOut(clip, delta) {
                 continue
             var itemLeft = repeater.itemAt(i).x
             var itemRight = itemLeft + repeater.itemAt(i).width
-            if (x > itemLeft - SNAP && x < itemLeft + SNAP)
+            if (x > itemLeft - SNAP_TRIM && x < itemLeft + SNAP_TRIM)
                 return Math.round((rightEdge - itemLeft) / timeScale)
-            else if (x > itemRight - SNAP && x < itemRight + SNAP)
+            else if (x > itemRight - SNAP_TRIM && x < itemRight + SNAP_TRIM)
                 return Math.round((rightEdge - itemRight) / timeScale)
         }
     }
-    if (x > cursorX - SNAP && x < cursorX + SNAP) {
+    // Snap to clips on other tracks.
+    for (var j = 0; j < timeline.trackCount; j++) {
+        if (j !== trackIndex) {
+            var track = timeline.trackAt(j)
+            for (i = 0; i < track.clipCount; i++) {
+                var item = track.clipAt(i)
+                if (item.isBlank)
+                    continue
+                itemLeft = item.x
+                itemRight = itemLeft + item.width
+                if (x > itemLeft - SNAP_TRIM && x < itemLeft + SNAP_TRIM)
+                    return Math.round((rightEdge - itemLeft) / timeScale)
+                else if (x > itemRight - SNAP_TRIM && x < itemRight + SNAP_TRIM)
+                    return Math.round((rightEdge - itemRight) / timeScale)
+            }
+        }
+    }
+    if (x > cursorX - SNAP_TRIM && x < cursorX + SNAP_TRIM) {
         // Snap around cursor/playhead.
         return Math.round((rightEdge - cursorX) / timeScale)
     }

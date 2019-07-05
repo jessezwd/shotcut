@@ -29,6 +29,7 @@
 #include "ui_inserthtmldialog.h"
 #include "qmltypes/qmlutilities.h"
 #include "settings.h"
+#include "util.h"
 
 #include <QtWidgets>
 #include <QtWebKitWidgets>
@@ -173,7 +174,7 @@ bool HtmlEditor::maybeSave()
 void HtmlEditor::fileNew()
 {
     if (maybeSave()) {
-        ui->webView->setHtml("<p></p>");
+        ui->webView->setHtml("<p></p>", baseUrl);
         ui->webView->setFocus();
         ui->webView->page()->setContentEditable(true);
         setCurrentFileName(QString());
@@ -207,6 +208,9 @@ bool HtmlEditor::fileSave()
     if (fileName.isEmpty() || fileName.startsWith(QLatin1String(":/")))
         return fileSaveAs();
 
+    if (Util::warnIfNotWritable(fileName, this, tr("Save as...")))
+        return false;
+
     QFile file(fileName);
     bool success = file.open(QIODevice::WriteOnly);
     if (success) {
@@ -228,7 +232,6 @@ bool HtmlEditor::fileSave()
 bool HtmlEditor::fileSaveAs()
 {
     QString path = Settings.savePath();
-    path.append("/.html");
     QString fn = QFileDialog::getSaveFileName(this, tr("Save as..."),
                  path, tr("HTML-Files (*.htm *.html);;All Files (*)"));
     if (fn.isEmpty())
@@ -236,6 +239,7 @@ bool HtmlEditor::fileSaveAs()
     if (!(fn.endsWith(".htm", Qt::CaseInsensitive) || fn.endsWith(".html", Qt::CaseInsensitive)))
         fn += ".htm"; // default
     setCurrentFileName(fn);
+    baseUrl = QUrl::fromLocalFile(fn);
     Settings.setSavePath(QFileInfo(fn).path());
     return fileSave();
 }
@@ -243,10 +247,11 @@ bool HtmlEditor::fileSaveAs()
 void HtmlEditor::insertImage()
 {
     QString filters;
-    filters += tr("Common Graphics (*.png *.jpg *.jpeg *.gif);;");
+    filters += tr("Common Graphics (*.png *.jpg *.jpeg *.gif *.svg);;");
     filters += tr("Portable Network Graphics (PNG) (*.png);;");
     filters += tr("JPEG (*.jpg *.jpeg);;");
     filters += tr("Graphics Interchange Format (*.gif);;");
+    filters += tr("Scalable Vector Graphics (*.svg);;");
     filters += tr("All Files (*)");
 
     QString fn = QFileDialog::getOpenFileName(this, tr("Open image..."),
@@ -585,7 +590,7 @@ void HtmlEditor::changeTab(int index)
     } else {
         html = ui->plainTextEdit->toPlainText();
         ui->webView->blockSignals(true);
-        ui->webView->setHtml(html);
+        ui->webView->setHtml(html, baseUrl);
         ui->webView->blockSignals(false);
         FORWARD_ACTION(ui->actionEditUndo, QWebPage::Undo);
         FORWARD_ACTION(ui->actionEditRedo, QWebPage::Redo);
@@ -702,10 +707,11 @@ bool HtmlEditor::load(const QString &f)
     QFile file(f);
     if (!file.open(QFile::ReadOnly))
         return false;
+    baseUrl = QUrl::fromLocalFile(f);
 
     const QString html = QString::fromUtf8(file.readAll());
     ui->webView->blockSignals(true);
-    ui->webView->setHtml(html);
+    ui->webView->setHtml(html, baseUrl);
     ui->webView->blockSignals(false);
     ui->webView->page()->setContentEditable(true);
     ui->webView->page()->setLinkDelegationPolicy(QWebPage::DelegateAllLinks);

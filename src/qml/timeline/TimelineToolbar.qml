@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,96 +19,69 @@ import QtQuick 2.2
 import QtQuick.Controls 1.0
 import QtQuick.Layouts 1.0
 import QtGraphicalEffects 1.0
-import 'Timeline.js' as Logic
 
 ToolBar {
-    property alias ripple: rippleButton.checked
     property alias scrub: scrubButton.checked
-    property alias snap: snapButton.checked
-    property color checkedColor: Qt.rgba(activePalette.highlight.r, activePalette.highlight.g, activePalette.highlight.b, 0.3)
+    property color checkedColor: Qt.rgba(activePalette.highlight.r, activePalette.highlight.g, activePalette.highlight.b, 0.4)
     property alias scaleSlider: scaleSlider
 
     SystemPalette { id: activePalette }
 
     width: 200
-    height: 24
+    height: snapButton.height + 4
     anchors.margins: 0
 
     RowLayout {
         ToolButton {
             action: menuAction
-            implicitWidth: 28
-            implicitHeight: 24
         }
         Button { // separator
             enabled: false
             implicitWidth: 1
-            implicitHeight: 20
         }
         ToolButton {
             action: cutAction
-            implicitWidth: 28
-            implicitHeight: 24
         }
         ToolButton {
             action: copyAction
-            implicitWidth: 28
-            implicitHeight: 24
         }
         ToolButton {
             action: insertAction
-            implicitWidth: 28
-            implicitHeight: 24
         }
         Button { // separator
             enabled: false
             implicitWidth: 1
-            implicitHeight: 20
         }
         ToolButton {
             action: appendAction
-            implicitWidth: 28
-            implicitHeight: 24
         }
         ToolButton {
             action: deleteAction
-            implicitWidth: 28
-            implicitHeight: 24
         }
         ToolButton {
             action: liftAction
-            implicitWidth: 28
-            implicitHeight: 24
         }
         ToolButton {
             action: overwriteAction
-            implicitWidth: 28
-            implicitHeight: 24
         }
         ToolButton {
             action: splitAction
-            implicitWidth: 28
-            implicitHeight: 24
         }
         Button { // separator
             enabled: false
             implicitWidth: 1
-            implicitHeight: 20
         }
         ToolButton {
             id: snapButton
-            implicitWidth: 28
-            implicitHeight: 24
             checkable: true
-            checked: true
+            checked: settings.timelineSnap
             iconName: 'snap'
             iconSource: 'qrc:///icons/oxygen/32x32/actions/snap.png'
             tooltip: qsTr('Toggle snapping')
+            onClicked: settings.timelineSnap = checked
         }
         ToolButton {
             id: scrubButton
-            implicitWidth: 28
-            implicitHeight: 24
             checkable: true
             iconName: 'scrub_drag'
             iconSource: 'qrc:///icons/oxygen/32x32/actions/scrub_drag.png'
@@ -117,37 +89,41 @@ ToolBar {
         }
         ToolButton {
             id: rippleButton
-            implicitWidth: 28
-            implicitHeight: 24
             checkable: true
+            checked: settings.timelineRipple
             iconName: 'target'
             iconSource: 'qrc:///icons/oxygen/32x32/actions/target.png'
             tooltip: qsTr('Ripple trim and drop')
             text: qsTr('Ripple')
+            onClicked: settings.timelineRipple = checked
+        }
+        ToolButton {
+            id: rippleAllButton
+            checkable: true
+            checked: settings.timelineRippleAllTracks
+            iconName: 'ripple-all'
+            iconSource: 'qrc:///icons/oxygen/32x32/actions/ripple-all.png'
+            tooltip: qsTr('Ripple edits across all tracks')
+            text: qsTr('Ripple All')
+            onClicked: settings.timelineRippleAllTracks = checked
         }
         Button { // separator
             enabled: false
             implicitWidth: 1
-            implicitHeight: 20
         }
         ToolButton {
             action: zoomOutAction
-            implicitWidth: 28
-            implicitHeight: 24
         }
         ZoomSlider {
             id: scaleSlider
-            onValueChanged: Logic.scrollIfNeeded()
         }
         ToolButton {
             action: zoomInAction
-            implicitWidth: 28
-            implicitHeight: 24
         }
 
         ColorOverlay {
             id: snapColorEffect
-            visible: snapButton.checked
+            visible: settings.timelineSnap
             anchors.fill: snapButton
             source: snapButton
             color: checkedColor
@@ -163,9 +139,17 @@ ToolBar {
         }
         ColorOverlay {
             id: rippleColorEffect
-            visible: rippleButton.checked
+            visible: settings.timelineRipple
             anchors.fill: rippleButton
             source: rippleButton
+            color: checkedColor
+            cached: true
+        }
+        ColorOverlay {
+            id: rippleAllColorEffect
+            visible: settings.timelineRippleAllTracks
+            anchors.fill: rippleAllButton
+            source: rippleAllButton
             color: checkedColor
             cached: true
         }

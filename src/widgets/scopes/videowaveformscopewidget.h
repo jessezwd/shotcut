@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015 Meltytech, LLC
+ * Copyright (c) 2015-2017 Meltytech, LLC
  * Author: Brian Matherly <code@brianmatherly.com>
  *
  * This program is free software: you can redistribute it and/or modify
@@ -22,7 +22,6 @@
 #include "scopewidget.h"
 #include <QMutex>
 #include <QImage>
-#include <QTime>
 
 class VideoWaveformScopeWidget Q_DECL_FINAL : public ScopeWidget
 {
@@ -30,16 +29,15 @@ class VideoWaveformScopeWidget Q_DECL_FINAL : public ScopeWidget
     
 public:
     explicit VideoWaveformScopeWidget();
-    QString getTitle();
+    QString getTitle() Q_DECL_OVERRIDE;
 
 private:
     void refreshScope(const QSize& size, bool full) Q_DECL_OVERRIDE;
     void paintEvent(QPaintEvent*) Q_DECL_OVERRIDE;
+    void mouseMoveEvent(QMouseEvent *event);
 
     SharedFrame m_frame;
-    QSize m_prevSize;
     QImage m_renderImg;
-    QTime m_refreshTime;
 
     // Variables accessed from multiple threads (mutex protected)
     QMutex m_mutex;

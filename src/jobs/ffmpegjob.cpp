@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2016-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -29,9 +28,11 @@
 #include <QRegularExpression>
 #include <Logger.h>
 
-FfmpegJob::FfmpegJob(const QString& name, const QStringList& args)
+FfmpegJob::FfmpegJob(const QString& name, const QStringList& args, bool isOpenLog)
     : AbstractJob(name)
     , m_totalFrames(0)
+    , m_previousPercent(0)
+    , m_isOpenLog(isOpenLog)
 {
     QAction* action = new QAction(tr("Open"), this);
     connect(action, SIGNAL(triggered()), this, SLOT(onOpenTriggered()));
@@ -50,7 +51,7 @@ void FfmpegJob::start()
     QString shotcutPath = qApp->applicationDirPath();
     QFileInfo ffmpegPath(shotcutPath, "ffmpeg");
     setReadChannel(QProcess::StandardError);
-    LOG_DEBUG() << ffmpegPath.absoluteFilePath() << m_args;
+    LOG_DEBUG() << ffmpegPath.absoluteFilePath() + " " + m_args.join(' ');
 #ifdef Q_OS_WIN
     QProcess::start(ffmpegPath.absoluteFilePath(), m_args);
 #else
@@ -62,44 +63,55 @@ void FfmpegJob::start()
 
 void FfmpegJob::onOpenTriggered()
 {
-    TextViewerDialog dialog(&MAIN);
-    dialog.setWindowTitle(tr("FFmpeg Log"));
-    dialog.setText(log());
-    dialog.exec();
+    if (m_isOpenLog) {
+        TextViewerDialog dialog(&MAIN);
+        dialog.setWindowTitle(tr("FFmpeg Log"));
+        dialog.setText(log());
+        dialog.exec();
+    } else {
+        MAIN.open(objectName().toUtf8().constData());
+    }
 }
 
 void FfmpegJob::onReadyRead()
 {
-    QString msg = readLine();
-    if (msg.contains("Duration:")) {
-        m_duration = msg.mid(msg.indexOf("Duration:") + 9);
-        m_duration = m_duration.left(m_duration.indexOf(','));
-        emit progressUpdated(m_index, 0);
-        appendToLog(msg);
-    }
-    else if (!m_totalFrames && msg.contains(" fps")) {
-        Mlt::Profile profile;
-        QRegularExpression re("(\\d+|\\d+.\\d+) fps");
-        QRegularExpressionMatch match = re.match(msg);
-        if (match.hasMatch()) {
-            QString fps = match.captured(1);
-            profile.set_frame_rate(qRound(fps.toFloat() * 1000), 1000);
-        } else {
-            profile.set_frame_rate(25, 1);
-        }
-        Mlt::Properties props;
-        props.set("_profile", profile.get_profile(), 0);
-        m_totalFrames = props.time_to_frames(m_duration.toLatin1().constData());
-        appendToLog(msg);
-    }
-    else if (msg.startsWith("frame=") && m_totalFrames > 0) {
-        msg = msg.mid(msg.indexOf("frame=") + 6);
-        msg = msg.left(msg.indexOf(" fps"));
-        int frame = msg.toInt();
-        emit progressUpdated(m_index, qRound(frame * 100.0 / m_totalFrames));
-    }
-    else {
-        if (!msg.trimmed().isEmpty())
+    QString msg;
+    do {
+        msg = readLine();
+        if (msg.contains("Duration:")) {
+            m_duration = msg.mid(msg.indexOf("Duration:") + 9);
+            m_duration = m_duration.left(m_duration.indexOf(','));
+            emit progressUpdated(m_item, 0);
             appendToLog(msg);
-    }
+        }
+        else if (!m_totalFrames && msg.contains(" fps")) {
+            Mlt::Profile profile;
+            QRegularExpression re("(\\d+|\\d+.\\d+) fps");
+            QRegularExpressionMatch match = re.match(msg);
+            if (match.hasMatch()) {
+                QString fps = match.captured(1);
+                profile.set_frame_rate(qRound(fps.toFloat() * 1000), 1000);
+            } else {
+                profile.set_frame_rate(25, 1);
+            }
+            Mlt::Properties props;
+            props.set("_profile", profile.get_profile(), 0);
+            m_totalFrames = props.time_to_frames(m_duration.toLatin1().constData());
+            appendToLog(msg);
+        }
+        else if (msg.startsWith("frame=") && m_totalFrames > 0) {
+            msg = msg.mid(msg.indexOf("frame=") + 6);
+            msg = msg.left(msg.indexOf(" fps"));
+            int frame = msg.toInt();
+            int percent = qRound(frame * 100.0 / m_totalFrames);
+            if (percent != m_previousPercent) {
+                emit progressUpdated(m_item, percent);
+                m_previousPercent = percent;
+            }
+        }
+        else {
+            if (!msg.trimmed().isEmpty())
+                appendToLog(msg);
+        }
+    } while (!msg.isEmpty());
 }

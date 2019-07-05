@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -79,7 +78,6 @@ public:
 private:
     MultitrackModel& m_model;
     int m_trackIndex;
-    QString m_playlistXml;
     int m_position;
     QString m_xml;
     UndoHelper m_undoHelper;
@@ -192,7 +190,7 @@ private:
 class MoveClipCommand : public QUndoCommand
 {
 public:
-    MoveClipCommand(MultitrackModel& model, int fromTrackIndex, int toTrackIndex, int clipIndex, int position, QUndoCommand * parent = 0);
+    MoveClipCommand(MultitrackModel& model, int fromTrackIndex, int toTrackIndex, int clipIndex, int position, bool ripple, QUndoCommand * parent = 0);
     void redo();
     void undo();
 private:
@@ -202,6 +200,7 @@ private:
     int m_fromClipIndex;
     int m_fromStart;
     int m_toStart;
+    bool m_ripple;
     UndoHelper m_undoHelper;
 };
 
@@ -301,15 +300,17 @@ private:
 class AddTransitionCommand : public QUndoCommand
 {
 public:
-    AddTransitionCommand(MultitrackModel& model, int trackIndex, int clipIndex, int position, QUndoCommand * parent = 0);
+    AddTransitionCommand(MultitrackModel& model, int trackIndex, int clipIndex, int position, bool ripple, QUndoCommand * parent = 0);
     void redo();
     void undo();
+    int getTransitionIndex() const { return m_transitionIndex; }
 private:
     MultitrackModel& m_model;
     int m_trackIndex;
     int m_clipIndex;
     int m_position;
     int m_transitionIndex;
+    bool m_ripple;
     UndoHelper m_undoHelper;
 };
 
@@ -352,7 +353,7 @@ private:
 class AddTransitionByTrimInCommand : public TrimCommand
 {
 public:
-    AddTransitionByTrimInCommand(MultitrackModel& model, int trackIndex, int clipIndex, int delta, bool redo = true, QUndoCommand * parent = 0);
+    AddTransitionByTrimInCommand(MultitrackModel& model, int trackIndex, int clipIndex, int duration, int trimDelta, bool redo = true, QUndoCommand * parent = 0);
     void redo();
     void undo();
 protected:
@@ -362,7 +363,8 @@ private:
     MultitrackModel& m_model;
     int m_trackIndex;
     int m_clipIndex;
-    int m_delta;
+    int m_duration;
+    int m_trimDelta;
     bool m_notify;
     bool m_redo;
 };
@@ -398,7 +400,7 @@ private:
 class AddTransitionByTrimOutCommand : public TrimCommand
 {
 public:
-    AddTransitionByTrimOutCommand(MultitrackModel& model, int trackIndex, int clipIndex, int delta, bool redo = true, QUndoCommand * parent = 0);
+    AddTransitionByTrimOutCommand(MultitrackModel& model, int trackIndex, int clipIndex, int duration, int trimDelta, bool redo = true, QUndoCommand * parent = 0);
     void redo();
     void undo();
 protected:
@@ -408,7 +410,8 @@ private:
     MultitrackModel& m_model;
     int m_trackIndex;
     int m_clipIndex;
-    int m_delta;
+    int m_duration;
+    int m_trimDelta;
     bool m_notify;
     bool m_redo;
 };
@@ -446,9 +449,9 @@ public:
 private:
     MultitrackModel& m_model;
     int m_trackIndex;
-    QString m_xml;
     TrackType m_trackType;
     QString m_trackName;
+    UndoHelper m_undoHelper;
 };
 
 class ChangeBlendModeCommand : public QObject, public QUndoCommand
@@ -473,6 +476,10 @@ public:
     UpdateCommand(TimelineDock& timeline, int trackIndex, int clipIndex, int position,
         QUndoCommand * parent = 0);
     void setXmlAfter(const QString& xml) { m_xmlAfter = xml; }
+    void setPosition(int trackIndex, int clipIndex, int position);
+    int trackIndex() const {return m_trackIndex;}
+    int clipIndex() const {return m_clipIndex;}
+    int position() const {return m_position;}
     void redo();
     void undo();
 private:
@@ -482,6 +489,23 @@ private:
     int m_position;
     QString m_xmlAfter;
     bool m_isFirstRedo;
+    UndoHelper m_undoHelper;
+};
+
+class DetachAudioCommand: public QUndoCommand
+{
+public:
+    DetachAudioCommand(MultitrackModel& model, int trackIndex, int clipIndex, int position, const QString& xml, QUndoCommand* parent = 0);
+    void redo();
+    void undo();
+private:
+    MultitrackModel& m_model;
+    int m_trackIndex;
+    int m_clipIndex;
+    int m_position;
+    int m_targetTrackIndex;
+    QString m_audioIndex;
+    QString m_xml;
     UndoHelper m_undoHelper;
 };
 

@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2012-2015 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2012-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +18,8 @@
 #include "textviewerdialog.h"
 #include "ui_textviewerdialog.h"
 #include "settings.h"
+#include "util.h"
+
 #include <QFileDialog>
 
 TextViewerDialog::TextViewerDialog(QWidget *parent) :
@@ -41,9 +42,12 @@ void TextViewerDialog::setText(const QString &s)
 void TextViewerDialog::on_buttonBox_accepted()
 {
     QString path = Settings.savePath();
-    path.append("/.txt");
-    QString filename = QFileDialog::getSaveFileName(this, tr("Save Text"), path);
+    QString caption = tr("Save Text");
+    QString nameFilter = tr("Text Documents (*.txt);;All Files (*)");
+    QString filename = QFileDialog::getSaveFileName(this, caption, path, nameFilter);
     if (!filename.isEmpty()) {
+        if (Util::warnIfNotWritable(filename, this, caption))
+            return;
         QFile f(filename);
         f.open(QIODevice::WriteOnly | QIODevice::Text);
         f.write(ui->plainTextEdit->toPlainText().toUtf8());

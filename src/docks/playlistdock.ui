@@ -115,7 +115,7 @@ p, li { white-space: pre-wrap; }
          </widget>
         </item>
         <item>
-         <widget class="QListView" name="listView">
+         <widget class="PlaylistListView" name="listView">
           <property name="contextMenuPolicy">
            <enum>Qt::CustomContextMenu</enum>
           </property>
@@ -302,6 +302,11 @@ p, li { white-space: pre-wrap; }
     <string>Remove</string>
    </property>
   </action>
+  <action name="actionSetFileDate">
+   <property name="text">
+    <string>Set Creation Time...</string>
+   </property>
+  </action>
   <action name="actionGoto">
    <property name="text">
     <string>Goto</string>
@@ -369,6 +374,16 @@ p, li { white-space: pre-wrap; }
     <string>Add All to Timeline</string>
    </property>
   </action>
+  <action name="actionSortByName">
+   <property name="text">
+    <string>Sort By Name</string>
+   </property>
+  </action>
+  <action name="actionSortByDate">
+   <property name="text">
+    <string>Sort By Date</string>
+   </property>
+  </action>
   <action name="actionDetailed">
    <property name="checkable">
     <bool>true</bool>
@@ -408,6 +423,11 @@ p, li { white-space: pre-wrap; }
    <class>PlaylistTable</class>
    <extends>QTableView</extends>
    <header>widgets/playlisttable.h</header>
+  </customwidget>
+  <customwidget>
+   <class>PlaylistListView</class>
+   <extends>QListView</extends>
+   <header>widgets/playlistlistview.h</header>
   </customwidget>
  </customwidgets>
  <resources>

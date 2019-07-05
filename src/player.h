@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2012-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2012-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,6 +31,7 @@ class TimeSpinBox;
 class QFrame;
 class QSlider;
 class QAction;
+class QActionGroup;
 class QScrollBar;
 class QToolButton;
 class QTabBar;
@@ -41,6 +41,7 @@ class TransportControllable;
 class QLabel;
 class QPropertyAnimation;
 class QPushButton;
+class QMenu;
 
 class Player : public QWidget
 {
@@ -67,19 +68,20 @@ public:
 signals:
     void endOfStream();
     void showStatusMessage(QString);
-    void inChanged(int);
-    void outChanged(int);
+    void inChanged(int delta);
+    void outChanged(int delta);
     void played(double speed);
     void paused();
     void stopped();
     void seeked(int position);
-    void rewound();
-    void fastForwarded();
+    void rewound(bool forceChangeDirection);
+    void fastForwarded(bool forceChangeDirection);
     void previousSought(int currentPosition);
     void previousSought();
     void nextSought(int currentPosition);
     void nextSought();
     void zoomChanged(float zoom);
+    void gridChanged(int grid);
     void scrolledHorizontally(int x);
     void scrolledVertically(int y);
     void tabIndexChanged(int index);
@@ -95,12 +97,11 @@ public slots:
     void postProducerOpened();
     void onMeltedUnitOpened();
     void onDurationChanged();
-    void onShowFrame(int position, double fps, int in, int out, int length, bool isPlaying);
     void onFrameDisplayed(const SharedFrame& frame);
     void onVolumeChanged(int);
     void onCaptureStateChanged(bool);
-    void rewind();
-    void fastForward();
+    void rewind(bool forceChangeDirection = true);
+    void fastForward(bool forceChangeDirection = true);
     void showPaused();
     void showPlaying();
     void switchToTab(TabIndex index);
@@ -147,11 +148,9 @@ private:
     QScrollBar* m_horizontalScroll;
     QScrollBar* m_verticalScroll;
     QToolButton* m_zoomButton;
-    QAction* m_zoomFitAction;
-    QAction* m_zoomOriginalAction;
-    QAction* m_zoomOutAction50;
-    QAction* m_zoomOutAction25;
-    QAction* m_zoomInAction;
+    QToolButton* m_gridButton;
+    QActionGroup* m_gridActionGroup;
+    QAction* m_gridDefaultAction;
     float m_zoomToggleFactor;
     QTabBar* m_tabs;
     bool m_pauseAfterOpen;
@@ -164,6 +163,8 @@ private:
     QPropertyAnimation* m_statusFadeIn;
     QPropertyAnimation* m_statusFadeOut;
     QTimer m_statusTimer;
+    QMenu* m_zoomMenu;
+    QWidget* m_projectWidget;
 
 private slots:
     void updateSelection();
@@ -174,12 +175,10 @@ private slots:
     void on_actionVolume_triggered();
     void onMuteButtonToggled(bool checked);
     void setZoom(float factor, const QIcon &icon);
-    void zoomFit();
-    void zoomOriginal();
-    void zoomOut50();
-    void zoomOut25();
-    void zoomIn();
+    void onZoomTriggered();
     void toggleZoom(bool checked);
+    void onGridToggled();
+    void toggleGrid(bool checked);
     void onFadeOutFinished();
 };
 

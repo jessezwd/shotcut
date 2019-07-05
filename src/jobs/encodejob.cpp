@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2012-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2012-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,9 +29,11 @@
 #include "settings.h"
 #include "jobqueue.h"
 #include "jobs/videoqualityjob.h"
+#include "util.h"
+#include <Logger.h>
 
-EncodeJob::EncodeJob(const QString &name, const QString &xml)
-    : MeltJob(name, xml)
+EncodeJob::EncodeJob(const QString &name, const QString &xml, int frameRateNum, int frameRateDen)
+    : MeltJob(name, xml, frameRateNum, frameRateDen)
 {
     QAction* action = new QAction(tr("Open"), this);
     action->setToolTip(tr("Open the output file in the Shotcut player"));
@@ -49,27 +50,20 @@ EncodeJob::EncodeJob(const QString &name, const QString &xml)
     m_successActions << action;
 }
 
-void EncodeJob::onOpenTiggered()
-{
-    MAIN.open(objectName().toUtf8().constData());
-}
-
-void EncodeJob::onShowFolderTriggered()
-{
-    QFileInfo fi(objectName());
-    QDesktopServices::openUrl(QUrl::fromLocalFile(fi.path()));
-}
-
 void EncodeJob::onVideoQualityTriggered()
 {
     // Get the location and file name for the report.
     QString directory = Settings.encodePath();
-    directory += "/.txt";
-    QString reportPath= QFileDialog::getSaveFileName(&MAIN, tr("Video Quality Report"), directory);
+    QString caption = tr("Video Quality Report");
+    QString nameFilter = tr("Text Documents (*.txt);;All Files (*)");
+    QString reportPath= QFileDialog::getSaveFileName(&MAIN, caption, directory, nameFilter);
     if (!reportPath.isEmpty()) {
         QFileInfo fi(reportPath);
         if (fi.suffix().isEmpty())
             reportPath += ".txt";
+
+        if (Util::warnIfNotWritable(reportPath, &MAIN, caption, true /* remove */))
+            return;
 
         // Get temp filename for the new XML.
         QTemporaryFile tmp;
@@ -86,7 +80,7 @@ void EncodeJob::onVideoQualityTriggered()
             tractor.set_track(encoded, 1);
             tractor.plant_transition(vqm);
             vqm.set("render", 0);
-            MLT.saveXML(tmp.fileName(), &tractor, false /* without relative paths */);
+            MLT.saveXML(tmp.fileName(), &tractor, false /* without relative paths */, false /* do not verify */ );
 
             // Add consumer element to XML.
             QFile f1(tmp.fileName());
@@ -106,7 +100,45 @@ void EncodeJob::onVideoQualityTriggered()
             consumerNode.setAttribute("terminate_on_pause", 1);
 
             // Create job and add it to the queue.
-            JOBS.add(new VideoQualityJob(objectName(), dom.toString(2), reportPath));
+            JOBS.add(new VideoQualityJob(objectName(), dom.toString(2), reportPath,
+                     MLT.profile().frame_rate_num(), MLT.profile().frame_rate_den()));
         }
     }
+}
+
+void EncodeJob::onFinished(int exitCode, QProcess::ExitStatus exitStatus)
+{
+    if (exitStatus != QProcess::NormalExit && exitCode != 0 && !stopped()) {
+        LOG_INFO() << "job failed with" << exitCode;
+        appendToLog(QString("Failed with exit code %1\n").arg(exitCode));
+        bool isParallel = false;
+        // Parse the XML.
+        m_xml.open();
+        QDomDocument dom(xmlPath());
+        dom.setContent(&m_xml);
+        m_xml.close();
+
+        // Locate the consumer element.
+        QDomNodeList consumers = dom.elementsByTagName("consumer");
+        for (int i = 0; i < consumers.length(); i++ ) {
+            QDomElement consumer = consumers.at(i).toElement();
+            // If real_time is set for parallel.
+            if (consumer.attribute("real_time").toInt() < -1) {
+                isParallel = true;
+                consumer.setAttribute("real_time", "-1");
+            }
+        }
+        if (isParallel) {
+            QString message(tr("Export job failed; trying again without Parallel processing."));
+            MAIN.showStatusMessage(message);
+            appendToLog(message.append("\n"));
+            m_xml.open();
+            QTextStream textStream(&m_xml);
+            dom.save(textStream, 2);
+            m_xml.close();
+            MeltJob::start();
+            return;
+        }
+    }
+    MeltJob::onFinished(exitCode, exitStatus);
 }

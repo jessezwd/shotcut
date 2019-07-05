@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2016 Meltytech, LLC
+ * Copyright (c) 2015-2019 Meltytech, LLC
  * Author: Brian Matherly <code@brianmatherly.com>
  *
  * This program is free software: you can redistribute it and/or modify
@@ -18,18 +18,24 @@
 
 #include "videowaveformscopewidget.h"
 #include <Logger.h>
+#include <QMouseEvent>
 #include <QPainter>
+#include <QToolTip>
+
+static const qreal IRE0 = 16;
+static const qreal IRE100 = 235;
+static const QColor TEXT_COLOR = {220, 220, 220};
+
 
 VideoWaveformScopeWidget::VideoWaveformScopeWidget()
   : ScopeWidget("VideoZoom")
   , m_frame()
   , m_renderImg()
-  , m_refreshTime()
   , m_mutex(QMutex::NonRecursive)
   , m_displayImg()
 {
     LOG_DEBUG() << "begin";
-    m_refreshTime.start();
+    setMouseTracking(true);
     LOG_DEBUG() << "end";
 }
 
@@ -37,13 +43,10 @@ VideoWaveformScopeWidget::VideoWaveformScopeWidget()
 void VideoWaveformScopeWidget::refreshScope(const QSize& size, bool full)
 {
     Q_UNUSED(size)
+    Q_UNUSED(full)
+
     while (m_queue.count() > 0) {
         m_frame = m_queue.pop();
-    }
-
-    if (!full && m_refreshTime.elapsed() < 90) {
-        // Limit refreshes to 90ms unless there is a good reason.
-        return;
     }
 
     if (m_frame.is_valid() && m_frame.get_image_width() && m_frame.get_image_height()) {
@@ -65,7 +68,6 @@ void VideoWaveformScopeWidget::refreshScope(const QSize& size, bool full)
                     currentVal += 0x0f0f0f0f;
                     m_renderImg.setPixel(x, y, currentVal);
                 }
-
             }
         }
     }
@@ -73,8 +75,6 @@ void VideoWaveformScopeWidget::refreshScope(const QSize& size, bool full)
     m_mutex.lock();
     m_displayImg.swap(m_renderImg);
     m_mutex.unlock();
-
-    m_refreshTime.restart();
 }
 
 void VideoWaveformScopeWidget::paintEvent(QPaintEvent*)
@@ -82,15 +82,66 @@ void VideoWaveformScopeWidget::paintEvent(QPaintEvent*)
     if (!isVisible())
         return;
 
+    // Create the painter
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
+    QFont font = QWidget::font();
+    int fontSize = font.pointSize() - (font.pointSize() > 10? 2 : (font.pointSize() > 8? 1 : 0));
+    font.setPointSize(fontSize);
+    QFontMetrics fm(font);
+    QPen pen;
+    pen.setColor(TEXT_COLOR);
+    pen.setWidth(devicePixelRatio());
+    p.setPen(pen);
+    p.setFont(font);
+
+    // Fill the background
     p.fillRect(0, 0, width(), height(), QBrush(Qt::black, Qt::SolidPattern));
+
+    // draw the waveform data
     m_mutex.lock();
     if(!m_displayImg.isNull()) {
         p.drawImage(rect(), m_displayImg, m_displayImg.rect());
     }
     m_mutex.unlock();
+
+    // Add IRE lines
+    int textpad = 3;
+    // 100
+    qreal ire100y = height() - (height() * IRE100 / 255);
+    p.drawLine(QPointF(0, ire100y), QPointF(width(), ire100y));
+    p.drawText(textpad, ire100y - textpad, tr("100"));
+    // 0
+    qreal ire0y = height() - (height() * IRE0 / 255);
+    p.drawLine(QPointF(0, ire0y), QPointF(width(), ire0y));
+    QRect textRect = fm.tightBoundingRect(tr("0"));
+    p.drawText(textpad, ire0y + textRect.height() + textpad, tr("0"));
+
     p.end();
+}
+
+void VideoWaveformScopeWidget::mouseMoveEvent(QMouseEvent *event)
+{
+    QString text;
+    qreal ire100y = height() - (height() * IRE100 / 255);
+    qreal ire0y = height() - (height() * IRE0 / 255);
+    qreal ireStep = (ire0y - ire100y) / 100.0;
+    int ire = (ire0y - event->pos().y()) / ireStep;
+
+    m_mutex.lock();
+    int frameWidth = m_displayImg.width();
+    m_mutex.unlock();
+
+    if(frameWidth != 0)
+    {
+        int pixel = frameWidth * event->pos().x() / width();
+        text =  QString(tr("Pixel: %1\nIRE: %2")).arg(QString::number(pixel), QString::number(ire));
+    }
+    else
+    {
+        text =  QString(tr("IRE: %1")).arg(QString::number(ire));
+    }
+    QToolTip::showText(event->globalPos(), text);
 }
 
 QString VideoWaveformScopeWidget::getTitle()

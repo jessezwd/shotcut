@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -53,11 +52,6 @@ AttachedFiltersModel::AttachedFiltersModel(QObject *parent)
 {
 }
 
-bool AttachedFiltersModel::isReady()
-{
-    return m_producer;
-}
-
 Mlt::Filter* AttachedFiltersModel::getFilter(int row) const
 {
     Mlt::Filter* result = 0;
@@ -84,24 +78,15 @@ void AttachedFiltersModel::setProducer(Mlt::Producer* producer)
 
 QString AttachedFiltersModel::producerTitle() const
 {
-    if (m_producer && m_producer->is_valid()) {
-        if (m_producer->get(kShotcutTransitionProperty))
-            return tr("Transition");
-        if (m_producer->get(kTrackNameProperty))
-            return tr("Track: %1").arg(QString::fromUtf8(m_producer->get(kTrackNameProperty)));
-        if (tractor_type == m_producer->type())
-            return tr("Timeline");
-        if (m_producer->get(kShotcutCaptionProperty))
-            return QString::fromUtf8(m_producer->get(kShotcutCaptionProperty));
-        if (m_producer->get("resource"))
-            return Util::baseName(QString::fromUtf8(m_producer->get("resource")));
-    }
-    return QString();
+    if (m_producer)
+        return Util::producerTitle(*m_producer);
+    else
+        return QString();
 }
 
 bool AttachedFiltersModel::isProducerSelected() const
 {
-    return !m_producer.isNull();
+    return !m_producer.isNull() && m_producer->is_valid() && !m_producer->is_blank();
 }
 
 int AttachedFiltersModel::rowCount(const QModelIndex &) const
@@ -176,7 +161,8 @@ bool AttachedFiltersModel::setData(const QModelIndex& index, const QVariant& , i
         if (filter && filter->is_valid()) {
             filter->set("disable", !filter->get_int("disable"));
             emit changed();
-            emit dataChanged(createIndex(index.row(), 0), createIndex(index.row(), 0));
+            QModelIndex modelIndex = createIndex(index.row(), 0);
+            emit dataChanged(modelIndex, modelIndex, QVector<int>() << Qt::CheckStateRole);
         }
         delete filter;
         return true;
@@ -276,6 +262,9 @@ void AttachedFiltersModel::add(QmlMetadata* meta)
     if (filter->is_valid()) {
         if (!meta->objectName().isEmpty())
             filter->set(kShotcutFilterProperty, meta->objectName().toUtf8().constData());
+        filter->set_in_and_out(
+            m_producer->get(kFilterInProperty)? m_producer->get_int(kFilterInProperty) : m_producer->get_in(),
+            m_producer->get(kFilterOutProperty)? m_producer->get_int(kFilterOutProperty) : m_producer->get_out());
 
         // Put the filter after the last filter that is greater than or equal
         // in sort order.
@@ -312,6 +301,7 @@ void AttachedFiltersModel::add(QmlMetadata* meta)
         m_mltIndexMap.insert(insertIndex, mltIndex);
         m_metaList.insert(insertIndex, meta);
         endInsertRows();
+        emit addedOrRemoved(m_producer.data());
         emit changed();
     }
     else LOG_WARNING() << "Failed to load filter" << meta->mlt_service();
@@ -340,6 +330,7 @@ void AttachedFiltersModel::remove(int row)
     }
     m_metaList.removeAt(row);
     endRemoveRows();
+    emit addedOrRemoved(m_producer.data());
     emit changed();
     delete filter;
 }
@@ -366,7 +357,8 @@ void AttachedFiltersModel::reset(Mlt::Producer* producer)
     m_event.reset();
     if (producer && producer->is_valid())
         m_producer.reset(new Mlt::Producer(producer));
-    else if (MLT.isClip() && qstrcmp("_hide", MLT.producer()->get("resource")))
+    else if (MLT.isClip() && MLT.producer() && MLT.producer()->is_valid()
+             && qstrcmp("_hide", MLT.producer()->get("resource")))
         m_producer.reset(new Mlt::Producer(MLT.producer()));
     else
         m_producer.reset();
@@ -400,7 +392,6 @@ void AttachedFiltersModel::reset(Mlt::Producer* producer)
     endResetModel();
     emit trackTitleChanged();
     emit isProducerSelectedChanged();
-    emit readyChanged();
 }
 
 void AttachedFiltersModel::producerChanged(mlt_properties, AttachedFiltersModel* model)

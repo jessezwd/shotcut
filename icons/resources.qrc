@@ -27,6 +27,7 @@
         <file>dark/32x32/video-television.png</file>
         <file>dark/32x32/view-filter.png</file>
         <file>dark/32x32/view-fullscreen.png</file>
+        <file>dark/32x32/view-grid.png</file>
         <file>dark/32x32/view-history.png</file>
         <file>dark/32x32/view-media-playlist.png</file>
         <file>dark/32x32/window-close.png</file>
@@ -58,6 +59,7 @@
         <file>light/32x32/video-television.png</file>
         <file>light/32x32/view-filter.png</file>
         <file>light/32x32/view-fullscreen.png</file>
+        <file>light/32x32/view-grid.png</file>
         <file>light/32x32/view-history.png</file>
         <file>light/32x32/view-media-playlist.png</file>
         <file>light/32x32/window-close.png</file>
@@ -84,6 +86,7 @@
         <file>oxygen/32x32/actions/speaker.png</file>
         <file>oxygen/32x32/actions/view-filter.png</file>
         <file>oxygen/32x32/actions/view-fullscreen.png</file>
+        <file>oxygen/32x32/actions/view-grid.png</file>
         <file>oxygen/32x32/actions/view-history.png</file>
         <file>oxygen/32x32/actions/view-media-playlist.png</file>
         <file>oxygen/32x32/actions/window-close.png</file>
@@ -92,7 +95,7 @@
         <file>oxygen/32x32/status/dialog-information.png</file>
         <file>oxygen/index.theme</file>
         <file>shotcut-logo-64.png</file>
-        <file>shotcut-logo-640.png</file>
+        <file>shotcut-logo-320x320.png</file>
         <file>oxygen/32x32/actions/run-build.png</file>
         <file>oxygen/32x32/actions/color-picker.png</file>
         <file>oxygen/32x32/actions/edit-copy.png</file>
@@ -207,6 +210,9 @@
         <file>light/32x32/view-list-details.png</file>
         <file>light/32x32/view-list-icons.png</file>
         <file>light/32x32/view-list-text.png</file>
+        <file>oxygen/32x32/actions/chronometer.png</file>
+        <file>light/32x32/chronometer.png</file>
+        <file>dark/32x32/chronometer.png</file>
         <file>dark/32x32/split.png</file>
         <file>light/32x32/split.png</file>
         <file>light/32x32/merge.png</file>
@@ -231,5 +237,14 @@
         <file>light/32x32/audio-volume-muted.png</file>
         <file>dark/32x32/audio-volume-high.png</file>
         <file>light/32x32/audio-volume-high.png</file>
+        <file>dark/32x32/edit-delete.png</file>
+        <file>light/32x32/edit-delete.png</file>
+        <file>oxygen/32x32/actions/edit-delete.png</file>
+        <file>light/32x32/document-new.png</file>
+        <file>oxygen/32x32/actions/document-new.png</file>
+        <file>dark/32x32/document-new.png</file>
+        <file>light/32x32/ripple-all.png</file>
+        <file>oxygen/32x32/actions/ripple-all.png</file>
+        <file>dark/32x32/ripple-all.png</file>
     </qresource>
 </RCC>

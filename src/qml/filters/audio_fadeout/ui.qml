@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2014-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2014-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,11 +29,25 @@ Item {
     Component.onCompleted: {
         if (filter.isNew) {
             duration = Math.ceil(settings.audioOutDuration * profile.fps)
-            filter.set('gain', 1)
-            filter.set('end', 0)
-            filter.set('out', filter.producerOut)
-            filter.set('in', filter.getDouble('out') - duration + 1)
+        } else if (filter.animateOut === 0) {
+            // Convert legacy filter.
+            duration = filter.duration
+            filter.in = producer.in
+            filter.out = producer.out
+        } else {
+            duration = filter.animateOut
         }
+    }
+
+    Connections {
+        target: filter
+        onAnimateOutChanged: duration = filter.animateOut
+    }
+
+    function updateFilter() {
+        filter.resetProperty('level')
+        filter.set('level', 0, filter.duration - duration)
+        filter.set('level', -60, filter.duration - 1)
     }
 
     ColumnLayout {
@@ -47,9 +60,9 @@ Item {
                 id: timeSpinner
                 minimumValue: 2
                 maximumValue: 5000
-                value: filter.getDouble('out') - filter.getDouble('in') + 1
                 onValueChanged: {
-                    filter.set('in', filter.getDouble('out') - duration + 1)
+                    filter.animateOut = duration
+                    updateFilter()
                 }
                 onSetDefaultClicked: {
                     duration = Math.ceil(settings.audioOutDuration * profile.fps)

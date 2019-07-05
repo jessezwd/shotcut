@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -44,6 +43,16 @@
 #define kShotcutCaptionProperty "shotcut:caption"
 #define kShotcutDetailProperty "shotcut:detail"
 #define kShotcutHashProperty "shotcut:hash"
+#define kShotcutSkipConvertProperty "shotcut:skipConvert"
+#define kShotcutAnimInProperty "shotcut:animIn"
+#define kShotcutAnimOutProperty "shotcut:animOut"
+// Shotcut's VUI (video user interface) components set this so that glwidget can
+// hide the VUI when the play head is not over the clip with the current filter.
+#define kShotcutVuiMetaProperty "meta.shotcut.vui"
+
+/* Project specific properties */
+#define kShotcutProjectAudioChannels "shotcut:projectAudioChannels"
+#define kShotcutProjectFolder "shotcut:projectFolder"
 
 /* Ideally all shotcut properties should begin with "shotcut:", but these
  * do not and kept for legacy reasons? */
@@ -56,13 +65,15 @@
 /* Special object Ids expected by Shotcut and used in XML */
 
 #define kBackgroundTrackId "background"
-#define kPlaylistTrackId "main bin"
+#define kLegacyPlaylistTrackId "main bin"
+#define kPlaylistTrackId "main_bin"
 
 /* Internal only */
 
 #define kAudioLevelsProperty "_shotcut:audio-levels"
 #define kBackgroundCaptureProperty "_shotcut:bgcapture"
 #define kPlaylistIndexProperty "_shotcut:playlistIndex"
+#define kPlaylistStartProperty "_shotcut:playlistStart"
 #define kFilterInProperty "_shotcut:filter_in"
 #define kFilterOutProperty "_shotcut:filter_out"
 #define kThumbnailInProperty "_shotcut:thumbnail-in"
@@ -70,5 +81,8 @@
 #define kUndoIdProperty "_shotcut:undo_id"
 #define kUuidProperty "_shotcut:uuid"
 #define kMultitrackItemProperty "_shotcut:multitrack-item"
+#define kExportFromProperty "_shotcut:exportFromDefault"
+
+#define kDefaultMltProfile "atsc_1080p_25"
 
 #endif // SHOTCUT_MLT_PROPERTIES_H

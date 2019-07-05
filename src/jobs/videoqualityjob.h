@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2012-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2012-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,12 +25,11 @@ class VideoQualityJob : public MeltJob
     Q_OBJECT
 public:
     VideoQualityJob(const QString& name, const QString& xml,
-                    const QString& reportPath);
+                    const QString& reportPath, int frameRateNum, int frameRateDen);
 
 private slots:
     void onOpenTiggered();
     void onViewReportTriggered();
-    void onShowFolderTriggered();
 
 private:
     QString m_reportPath;

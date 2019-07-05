@@ -58,6 +58,7 @@ signals:
     void captureStateChanged(bool);
 
 public slots:
+    void onAudioChannelsChanged();
     void onProducerOpened();
     void onProfileChanged();
 
@@ -97,12 +98,37 @@ private slots:
 
     void on_fromCombo_currentIndexChanged(int index);
 
+    void on_videoCodecCombo_currentIndexChanged(int index);
+
+    void setAudioChannels( int channels );
+
+    void on_widthSpinner_editingFinished();
+
+    void on_heightSpinner_editingFinished();
+
+    void on_advancedButton_clicked(bool checked);
+
+    void on_hwencodeCheckBox_clicked(bool checked);
+
+    void on_hwencodeButton_clicked();
+
+    void on_advancedCheckBox_clicked(bool checked);
+
+    void on_fpsSpinner_editingFinished();
+
+    void on_fpsComboBox_activated(const QString &arg1);
+
 private:
     enum {
         RateControlAverage = 0,
         RateControlConstant,
         RateControlQuality,
         RateControlConstrained
+    };
+    enum {
+        AudioChannels1 = 0,
+        AudioChannels2,
+        AudioChannels6,
     };
     Ui::EncodeDock *ui;
     Mlt::Properties *m_presets;
@@ -116,12 +142,13 @@ private:
     void loadPresets();
     Mlt::Properties* collectProperties(int realtime);
     void collectProperties(QDomElement& node, int realtime);
-    MeltJob* createMeltJob(Mlt::Service* service, const QString& target, int realtime, int pass = 0);
+    MeltJob* createMeltJob(Mlt::Producer* service, const QString& target, int realtime, int pass = 0);
     void runMelt(const QString& target, int realtime = -1);
     void enqueueMelt(const QString& target, int realtime);
     void encode(const QString& target);
     void resetOptions();
     Mlt::Producer* fromProducer() const;
+    void showFrameRateDialog(int numerator);
 };
 
 #endif // ENCODEDOCK_H

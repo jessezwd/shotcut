@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,36 +19,42 @@ import QtQuick 2.0
 import QtQuick.Controls 1.0
 
 Rectangle {
-    property int stepSize: 34
-    property int index: 0
     property real timeScale: 1.0
+    property int adjustment: 0
+    property real intervalSeconds: 5 * Math.max(1, Math.floor(1.5 / timeScale)) + adjustment
 
     SystemPalette { id: activePalette }
 
     id: rulerTop
     enabled: false
-    height: 24
+    height: 28
     color: activePalette.base
 
     Repeater {
-        model: parent.width / stepSize
+        model: parent.width / (intervalSeconds * profile.fps * timeScale)
         Rectangle {
             anchors.bottom: rulerTop.bottom
-            height: (index % 4)? ((index % 2) ? 3 : 7) : 14
+            height: 18
             width: 1
             color: activePalette.windowText
-            x: index * stepSize
+            x: index * intervalSeconds * profile.fps * timeScale
+            Label {
+                anchors.left: parent.right
+                anchors.leftMargin: 2
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 2
+                color: activePalette.windowText
+                text: application.timecode(index * intervalSeconds * profile.fps + 2).substr(0, 8)
+            }
         }
     }
-    Repeater {
-        model: parent.width / stepSize / 4
-        Label {
-            anchors.bottom: rulerTop.bottom
-            anchors.bottomMargin: 2
-            color: activePalette.windowText
-            x: index * stepSize * 4 + 2
-            text: timeline.timecode(index * stepSize * 4 / timeScale)
-            font.pointSize: 7.5
+
+    Connections {
+        target: profile
+        onProfileChanged: {
+            // Force a repeater model change to update the labels.
+            ++adjustment
+            --adjustment
         }
     }
 }

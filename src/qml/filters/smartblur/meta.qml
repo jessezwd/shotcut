@@ -21,7 +21,7 @@ import org.shotcut.qml 1.0
 
 Metadata {
     type: Metadata.Filter
-    name: qsTr("Reduce Noise")
+    name: qsTr("Reduce Noise: Smart Blur")
     mlt_service: 'avfilter.smartblur'
     qml: 'ui.qml'
 }

@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,13 +22,90 @@
 #include <QString>
 #include <QDir>
 #include <QUrl>
+#include <QQmlListProperty>
+
+class QmlKeyframesParameter : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(QString name MEMBER m_name NOTIFY changed)
+    Q_PROPERTY(QString property MEMBER m_property NOTIFY changed)
+    Q_PROPERTY(QStringList gangedProperties MEMBER m_gangedProperties NOTIFY changed)
+    /// If isSimple this parameter cannot use full keyframes while simple is in use.
+    Q_PROPERTY(bool isSimple MEMBER m_isSimple NOTIFY changed)
+    Q_PROPERTY(bool isCurve MEMBER m_isCurve NOTIFY changed)
+    Q_PROPERTY(double minimum MEMBER m_minimum NOTIFY changed)
+    Q_PROPERTY(double maximum MEMBER m_maximum NOTIFY changed)
+
+public:
+    explicit QmlKeyframesParameter(QObject* parent = 0);
+
+    QString name() const { return m_name; }
+    QString property() const { return m_property; }
+    QStringList gangedProperties() const { return m_gangedProperties; }
+    bool isSimple() const { return m_isSimple; }
+    bool isCurve() const { return m_isCurve; }
+    double minimum() const { return m_minimum; }
+    double maximum() const { return m_maximum; }
+
+signals:
+    void changed();
+
+private:
+    QString m_name;
+    QString m_property;
+    QStringList m_gangedProperties;
+    bool m_isSimple;
+    bool m_isCurve;
+    double m_minimum;
+    double m_maximum;
+};
+
+class QmlKeyframesMetadata : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(bool allowTrim MEMBER m_allowTrim NOTIFY changed)
+    Q_PROPERTY(bool allowAnimateIn MEMBER m_allowAnimateIn NOTIFY changed)
+    Q_PROPERTY(bool allowAnimateOut MEMBER m_allowAnimateOut NOTIFY changed)
+    Q_PROPERTY(QQmlListProperty<QmlKeyframesParameter> parameters READ parameters NOTIFY changed)
+    /// simpleProperties identifies a list of properties whose keyframe position must be updated when trimming.
+    Q_PROPERTY(QList<QString> simpleProperties MEMBER m_simpleProperties NOTIFY changed)
+    Q_PROPERTY(QString minimumVersion MEMBER m_minimumVersion NOTIFY changed)
+    Q_PROPERTY(bool enabled MEMBER m_enabled NOTIFY changed)
+
+public:
+    explicit QmlKeyframesMetadata(QObject *parent = 0);
+
+    bool allowTrim() const { return m_allowTrim; }
+    bool allowAnimateIn() const { return m_allowAnimateIn; }
+    bool allowAnimateOut() const { return m_allowAnimateOut; }
+    QList<QString> simpleProperties() const { return m_simpleProperties; }
+
+    QQmlListProperty<QmlKeyframesParameter> parameters() { return QQmlListProperty<QmlKeyframesParameter>(this, m_parameters); }
+    int parameterCount() const { return m_parameters.count(); }
+    QmlKeyframesParameter *parameter(int index) const { return m_parameters[index]; }
+    void checkVersion(const QString& version);
+    void setDisabled();
+
+signals:
+    void changed();
+
+private:
+    bool m_allowTrim;
+    bool m_allowAnimateIn;
+    bool m_allowAnimateOut;
+    QList<QmlKeyframesParameter *> m_parameters;
+    QList<QString> m_simpleProperties;
+    QString m_minimumVersion;
+    bool m_enabled;
+};
+
 
 class QmlMetadata : public QObject
 {
     Q_OBJECT
     Q_ENUMS(PluginType)
     Q_PROPERTY(PluginType type READ type WRITE setType)
-    Q_PROPERTY(QString name READ name WRITE setName)
+    Q_PROPERTY(QString name READ name WRITE setName NOTIFY changed)
     Q_PROPERTY(QString mlt_service READ mlt_service WRITE set_mlt_service)
     Q_PROPERTY(bool needsGPU READ needsGPU WRITE setNeedsGPU NOTIFY changed)
     Q_PROPERTY(QString qml READ qmlFileName WRITE setQmlFileName)
@@ -43,6 +119,7 @@ class QmlMetadata : public QObject
     Q_PROPERTY(bool allowMultiple READ allowMultiple WRITE setAllowMultiple)
     Q_PROPERTY(bool isClipOnly READ isClipOnly WRITE setIsClipOnly)
     Q_PROPERTY(bool isGpuCompatible READ isGpuCompatible() WRITE setIsGpuCompatible)
+    Q_PROPERTY(QmlKeyframesMetadata* keyframes READ keyframes NOTIFY changed)
 
 public:
     enum PluginType {
@@ -85,6 +162,7 @@ public:
     void setIsClipOnly(bool isClipOnly);
     bool isGpuCompatible() const { return m_isGpuCompatible; }
     void setIsGpuCompatible(bool isCompatible) { m_isGpuCompatible = isCompatible; }
+    QmlKeyframesMetadata* keyframes() { return &m_keyframes; }
 
 signals:
     void changed();
@@ -104,6 +182,7 @@ private:
     bool m_allowMultiple;
     bool m_isClipOnly;
     bool m_isGpuCompatible;
+    QmlKeyframesMetadata m_keyframes;
 };
 
 #endif // QMLMETADATA_H

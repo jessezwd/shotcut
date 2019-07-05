@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2012-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2012-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,6 +22,8 @@
 #include "widgets/audioscale.h"
 #include "settings.h"
 #include "util.h"
+#include "widgets/newprojectfolder.h"
+
 #include <QtWidgets>
 #include <limits>
 
@@ -36,6 +37,10 @@ Player::Player(QWidget *parent)
     : QWidget(parent)
     , m_position(0)
     , m_playPosition(std::numeric_limits<int>::max())
+    , m_previousIn(-1)
+    , m_previousOut(-1)
+    , m_duration(0)
+    , m_isSeekable(false)
     , m_isMeltedPlaying(-1)
     , m_zoomToggleFactor(Settings.playerZoom() == 0.0f? 1.0f : Settings.playerZoom())
     , m_pauseAfterOpen(false)
@@ -57,6 +62,7 @@ Player::Player(QWidget *parent)
     // Add tab bar to indicate/select what is playing: clip, playlist, timeline.
     m_tabs = new QTabBar;
     m_tabs->setShape(QTabBar::RoundedSouth);
+    m_tabs->setUsesScrollButtons(false);
     m_tabs->addTab(tr("Source"));
     m_tabs->addTab(tr("Project"));
     m_tabs->setTabEnabled(SourceTabIndex, false);
@@ -73,29 +79,30 @@ Player::Player(QWidget *parent)
     Util::setColorsToHighlight(m_statusLabel, QPalette::Button);
     tabLayout->addWidget(m_statusLabel);
     tabLayout->addStretch(1);
-    QGraphicsOpacityEffect *effect = new QGraphicsOpacityEffect(this);
-    m_statusLabel->setGraphicsEffect(effect);
-    m_statusFadeIn = new QPropertyAnimation(effect, "opacity", this);
-    m_statusFadeIn->setDuration(STATUS_ANIMATION_MS);
-    m_statusFadeIn->setStartValue(0);
-    m_statusFadeIn->setEndValue(1);
-    m_statusFadeIn->setEasingCurve(QEasingCurve::InBack);
-    m_statusFadeOut = new QPropertyAnimation(effect, "opacity", this);
-    m_statusFadeOut->setDuration(STATUS_ANIMATION_MS);
-    m_statusFadeOut->setStartValue(0);
-    m_statusFadeOut->setEndValue(0);
-    m_statusFadeOut->setEasingCurve(QEasingCurve::OutBack);
-    m_statusTimer.setSingleShot(true);
-    connect(&m_statusTimer, SIGNAL(timeout()), m_statusFadeOut, SLOT(start()));
-    connect(m_statusFadeOut, SIGNAL(finished()), SLOT(onFadeOutFinished()));
-    m_statusFadeOut->start();
+    if (Settings.drawMethod() == Qt::AA_UseDesktopOpenGL) {
+        QGraphicsOpacityEffect *effect = new QGraphicsOpacityEffect(this);
+        m_statusLabel->setGraphicsEffect(effect);
+        m_statusFadeIn = new QPropertyAnimation(effect, "opacity", this);
+        m_statusFadeIn->setDuration(STATUS_ANIMATION_MS);
+        m_statusFadeIn->setStartValue(0);
+        m_statusFadeIn->setEndValue(1);
+        m_statusFadeIn->setEasingCurve(QEasingCurve::InBack);
+        m_statusFadeOut = new QPropertyAnimation(effect, "opacity", this);
+        m_statusFadeOut->setDuration(STATUS_ANIMATION_MS);
+        m_statusFadeOut->setStartValue(0);
+        m_statusFadeOut->setEndValue(0);
+        m_statusFadeOut->setEasingCurve(QEasingCurve::OutBack);
+        m_statusTimer.setSingleShot(true);
+        connect(&m_statusTimer, SIGNAL(timeout()), m_statusFadeOut, SLOT(start()));
+        connect(m_statusFadeOut, SIGNAL(finished()), SLOT(onFadeOutFinished()));
+        m_statusFadeOut->start();
+    }
 
     // Add the layouts for managing video view, scroll bars, and audio controls.
     m_videoLayout = new QHBoxLayout;
     m_videoLayout->setSpacing(4);
     m_videoLayout->setContentsMargins(0, 0, 0, 0);
-    vlayout->addLayout(m_videoLayout, 10);
-    vlayout->addStretch();
+    vlayout->addLayout(m_videoLayout, 1);
     m_videoScrollWidget = new QWidget;
     m_videoLayout->addWidget(m_videoScrollWidget, 10);
     m_videoLayout->addStretch();
@@ -106,7 +113,7 @@ Player::Player(QWidget *parent)
     // Add the video widgets.
     m_videoWidget = qobject_cast<QWidget*>(MLT.videoWidget());
     Q_ASSERT(m_videoWidget);
-    m_videoWidget->setMinimumSize(QSize(320, 180));
+    m_videoWidget->setMinimumSize(QSize(1, 1));
     glayout->addWidget(m_videoWidget, 0, 0);
     m_verticalScroll = new QScrollBar(Qt::Vertical);
     glayout->addWidget(m_verticalScroll, 0, 1);
@@ -114,6 +121,11 @@ Player::Player(QWidget *parent)
     m_horizontalScroll = new QScrollBar(Qt::Horizontal);
     glayout->addWidget(m_horizontalScroll, 1, 0);
     m_horizontalScroll->hide();
+
+    // Add the new project widget.
+    m_projectWidget = new NewProjectFolder(this);
+    vlayout->addWidget(m_projectWidget, 10);
+    vlayout->addStretch();
 
     // Add the volume and signal level meter
     m_volumePopup = new QFrame(this, Qt::Popup);
@@ -160,10 +172,6 @@ Player::Player(QWidget *parent)
     volumeLayoutH->addWidget(m_muteButton);
     connect(m_muteButton, SIGNAL(toggled(bool)), this, SLOT(onMuteButtonToggled(bool)));
 
-    // This hack realizes the volume popup geometry for on_actionVolume_triggered().
-    m_volumePopup->show();
-    m_volumePopup->hide();
-
     // Add the scrub bar.
     m_scrubber = new ScrubBar(this);
     m_scrubber->setFocusPolicy(Qt::NoFocus);
@@ -205,28 +213,99 @@ Player::Player(QWidget *parent)
 
     // Add zoom button to toolbar.
     m_zoomButton = new QToolButton;
-    QMenu* zoomMenu = new QMenu(this);
-    m_zoomFitAction = zoomMenu->addAction(
+    m_zoomMenu = new QMenu(this);
+    m_zoomMenu->addAction(
         QIcon::fromTheme("zoom-fit-best", QIcon(":/icons/oxygen/32x32/actions/zoom-fit-best")),
-        tr("Zoom Fit"), this, SLOT(zoomFit()));
-    m_zoomOutAction25 = zoomMenu->addAction(
+        tr("Zoom Fit"), this, SLOT(onZoomTriggered()))->setData(0.0f);
+    m_zoomMenu->addAction(
         QIcon::fromTheme("zoom-out", QIcon(":/icons/oxygen/32x32/actions/zoom-out")),
-        tr("Zoom 25%"), this, SLOT(zoomOut25()));
-    m_zoomOutAction50 = zoomMenu->addAction(
+        tr("Zoom 10%"), this, SLOT(onZoomTriggered()))->setData(0.1f);
+    m_zoomMenu->addAction(
         QIcon::fromTheme("zoom-out", QIcon(":/icons/oxygen/32x32/actions/zoom-out")),
-        tr("Zoom 50%"), this, SLOT(zoomOut50()));
-    m_zoomOriginalAction = zoomMenu->addAction(
+        tr("Zoom 25%"), this, SLOT(onZoomTriggered()))->setData(0.25f);
+    m_zoomMenu->addAction(
+        QIcon::fromTheme("zoom-out", QIcon(":/icons/oxygen/32x32/actions/zoom-out")),
+        tr("Zoom 50%"), this, SLOT(onZoomTriggered()))->setData(0.5f);;
+    m_zoomMenu->addAction(
         QIcon::fromTheme("zoom-original", QIcon(":/icons/oxygen/32x32/actions/zoom-original")),
-        tr("Zoom 100%"), this, SLOT(zoomOriginal()));
-    m_zoomInAction = zoomMenu->addAction(
+        tr("Zoom 100%"), this, SLOT(onZoomTriggered()))->setData(1.0f);;
+    m_zoomMenu->addAction(
         QIcon::fromTheme("zoom-in", QIcon(":/icons/oxygen/32x32/actions/zoom-in")),
-        tr("Zoom 200%"), this, SLOT(zoomIn()));
+        tr("Zoom 200%"), this, SLOT(onZoomTriggered()))->setData(2.0f);
+    m_zoomMenu->addAction(
+        QIcon::fromTheme("zoom-in", QIcon(":/icons/oxygen/32x32/actions/zoom-in")),
+        tr("Zoom 300%"), this, SLOT(onZoomTriggered()))->setData(3.0f);
+    m_zoomMenu->addAction(
+        QIcon::fromTheme("zoom-in", QIcon(":/icons/oxygen/32x32/actions/zoom-in")),
+        tr("Zoom 400%"), this, SLOT(onZoomTriggered()))->setData(4.0f);
+    m_zoomMenu->addAction(
+        QIcon::fromTheme("zoom-in", QIcon(":/icons/oxygen/32x32/actions/zoom-in")),
+        tr("Zoom 500%"), this, SLOT(onZoomTriggered()))->setData(5.0f);
+    m_zoomMenu->addAction(
+        QIcon::fromTheme("zoom-in", QIcon(":/icons/oxygen/32x32/actions/zoom-in")),
+        tr("Zoom 750%"), this, SLOT(onZoomTriggered()))->setData(7.5f);
+    m_zoomMenu->addAction(
+        QIcon::fromTheme("zoom-in", QIcon(":/icons/oxygen/32x32/actions/zoom-in")),
+        tr("Zoom 1000%"), this, SLOT(onZoomTriggered()))->setData(10.0f);
     connect(m_zoomButton, SIGNAL(toggled(bool)), SLOT(toggleZoom(bool)));
-    m_zoomButton->setMenu(zoomMenu);
+    m_zoomButton->setMenu(m_zoomMenu);
     m_zoomButton->setPopupMode(QToolButton::MenuButtonPopup);
     m_zoomButton->setCheckable(true);
     m_zoomButton->setToolTip(tr("Toggle zoom"));
     toolbar->addWidget(m_zoomButton);
+    toggleZoom(false);
+
+    // Add grid display button to toolbar.
+    m_gridButton = new QToolButton;
+    QMenu* gridMenu = new QMenu(this);
+    m_gridActionGroup = new QActionGroup(this);
+    QAction* action = gridMenu->addAction(tr("2x2 Grid"), this, SLOT(onGridToggled()));
+    action->setCheckable(true);
+    action->setData(2);
+    m_gridDefaultAction = action;
+    m_gridActionGroup->addAction(action);
+    action = gridMenu->addAction(tr("3x3 Grid"), this, SLOT(onGridToggled()));
+    action->setCheckable(true);
+    action->setData(3);
+    m_gridActionGroup->addAction(action);
+    action = gridMenu->addAction(tr("4x4 Grid"), this, SLOT(onGridToggled()));
+    action->setCheckable(true);
+    action->setData(4);
+    m_gridActionGroup->addAction(action);
+    action = gridMenu->addAction(tr("16x16 Grid"), this, SLOT(onGridToggled()));
+    action->setCheckable(true);
+    action->setData(16);
+    m_gridActionGroup->addAction(action);
+    action = gridMenu->addAction(tr("20 Pixel Grid"), this, SLOT(onGridToggled()));
+    action->setCheckable(true);
+    action->setData(10020);
+    m_gridActionGroup->addAction(action);
+    action = gridMenu->addAction(tr("10 Pixel Grid"), this, SLOT(onGridToggled()));
+    action->setCheckable(true);
+    action->setData(10010);
+    m_gridActionGroup->addAction(action);
+    action = gridMenu->addAction(tr("80/90% Safe Areas"), this, SLOT(onGridToggled()));
+    action->setCheckable(true);
+    action->setData(8090);
+    m_gridActionGroup->addAction(action);
+    action = gridMenu->addAction(tr("EBU R95 Safe Areas"), this, SLOT(onGridToggled()));
+    action->setCheckable(true);
+    action->setData(95);
+    m_gridActionGroup->addAction(action);
+    gridMenu->addSeparator();
+    action = gridMenu->addAction(tr("Snapping"));
+    action->setCheckable(true);
+    action->setChecked(true);
+    connect(action, SIGNAL(toggled(bool)), MLT.videoWidget(), SLOT(setSnapToGrid(bool)));
+    connect(m_gridButton, SIGNAL(toggled(bool)), SLOT(toggleGrid(bool)));
+    m_gridButton->setMenu(gridMenu);
+    m_gridButton->setIcon(QIcon::fromTheme("view-grid", QIcon(":/icons/oxygen/32x32/actions/view-grid")));
+    m_gridButton->setPopupMode(QToolButton::MenuButtonPopup);
+    m_gridButton->setCheckable(true);
+    m_gridButton->setToolTip(tr("Toggle grid display on the player"));
+    toolbar->addWidget(m_gridButton);
+
+    // Add volume control to toolbar.
     toolbar->addAction(actionVolume);
     m_volumeWidget = toolbar->widgetForAction(actionVolume);
 
@@ -250,6 +329,7 @@ Player::Player(QWidget *parent)
     connect(m_positionSpinner, SIGNAL(valueChanged(int)), this, SLOT(seek(int)));
     connect(m_positionSpinner, SIGNAL(editingFinished()), this, SLOT(setFocus()));
     connect(this, SIGNAL(endOfStream()), this, SLOT(pause()));
+    connect(this, SIGNAL(gridChanged(int)), MLT.videoWidget(), SLOT(setGrid(int)));
     connect(this, SIGNAL(zoomChanged(float)), MLT.videoWidget(), SLOT(setZoom(float)));
     connect(m_horizontalScroll, SIGNAL(valueChanged(int)), MLT.videoWidget(), SLOT(setOffsetX(int)));
     connect(m_verticalScroll, SIGNAL(valueChanged(int)), MLT.videoWidget(), SLOT(setOffsetY(int)));
@@ -266,12 +346,10 @@ void Player::connectTransport(const TransportControllable* receiver)
     connect(this, SIGNAL(paused()), receiver, SLOT(pause()));
     connect(this, SIGNAL(stopped()), receiver, SLOT(stop()));
     connect(this, SIGNAL(seeked(int)), receiver, SLOT(seek(int)));
-    connect(this, SIGNAL(rewound()), receiver, SLOT(rewind()));
-    connect(this, SIGNAL(fastForwarded()), receiver, SLOT(fastForward()));
+    connect(this, SIGNAL(rewound(bool)), receiver, SLOT(rewind(bool)));
+    connect(this, SIGNAL(fastForwarded(bool)), receiver, SLOT(fastForward(bool)));
     connect(this, SIGNAL(previousSought(int)), receiver, SLOT(previous(int)));
     connect(this, SIGNAL(nextSought(int)), receiver, SLOT(next(int)));
-    connect(this, SIGNAL(inChanged(int)), receiver, SLOT(setIn(int)));
-    connect(this, SIGNAL(outChanged(int)), receiver, SLOT(setOut(int)));
 }
 
 void Player::setupActions(QWidget* widget)
@@ -382,6 +460,11 @@ void Player::resizeEvent(QResizeEvent*)
 
 void Player::play(double speed)
 {
+    // Start from beginning if trying to start at the end.
+    if (m_position >= m_duration - 1) {
+        emit seeked(m_previousIn);
+        m_position = m_previousIn;
+    }
     emit played(speed);
     if (m_isSeekable) {
         actionPlay->setIcon(m_pauseIcon);
@@ -449,10 +532,12 @@ void Player::reset()
     actionRewind->setDisabled(true);
     actionFastForward->setDisabled(true);
     m_videoWidget->hide();
+    m_projectWidget->show();
 }
 
 void Player::onProducerOpened(bool play)
 {
+    m_projectWidget->hide();
     m_videoWidget->show();
     m_duration = MLT.producer()->get_length();
     m_isSeekable = MLT.isSeekable();
@@ -472,7 +557,7 @@ void Player::onProducerOpened(bool play)
         m_scrubber->setOutPoint(m_previousOut);
     }
     else {
-        m_durationLabel->setText(tr("Live").prepend(" / "));
+        m_durationLabel->setText(tr("Not Seekable").prepend(" / "));
         m_scrubber->setDisabled(true);
         // cause scrubber redraw
         m_scrubber->setScale(m_duration);
@@ -561,43 +646,12 @@ void Player::onDurationChanged()
         seek(m_duration - 1);
 }
 
-void Player::onShowFrame(int position, double fps, int in, int out, int length, bool isPlaying)
-{
-    m_duration = length;
-    MLT.producer()->set("length", length);
-    m_durationLabel->setText(QString(MLT.producer()->get_length_time()).prepend(" / "));
-    m_scrubber->setFramerate(fps);
-    m_scrubber->setScale(m_duration);
-    if (position < m_duration) {
-        m_position = position;
-        m_positionSpinner->blockSignals(true);
-        m_positionSpinner->setValue(position);
-        m_positionSpinner->blockSignals(false);
-        m_scrubber->onSeek(position);
-    }
-    if (m_isMeltedPlaying == -1 || isPlaying != m_isMeltedPlaying) {
-        m_isMeltedPlaying = isPlaying;
-        if (isPlaying) {
-            actionPlay->setIcon(m_pauseIcon);
-            actionPlay->setText(tr("Pause"));
-            actionPlay->setToolTip(tr("Pause playback (K)"));
-        }
-        else {
-            actionPlay->setIcon(m_playIcon);
-            actionPlay->setText(tr("Play"));
-            actionPlay->setToolTip(tr("Start playback (L)"));
-        }
-    }
-    m_previousIn = in;
-    m_previousOut = out;
-    m_scrubber->blockSignals(true);
-    setIn(in);
-    setOut(out);
-    m_scrubber->blockSignals(false);
-}
-
 void Player::onFrameDisplayed(const SharedFrame& frame)
 {
+    if (MLT.producer() && MLT.producer()->get_length() != m_duration) {
+        // This can happen if the profile changes. Reload the properties from the producer.
+        onProducerOpened(false);
+    }
     int position = frame.get_position();
     if (position < m_duration) {
         m_position = position;
@@ -610,7 +664,7 @@ void Player::onFrameDisplayed(const SharedFrame& frame)
             m_playPosition = std::numeric_limits<int>::max();
         }
     }
-    if (position >= m_duration)
+    if (position >= m_duration - 1)
         emit endOfStream();
 }
 
@@ -632,17 +686,24 @@ void Player::updateSelection()
 
 void Player::onInChanged(int in)
 {
-    if (in != m_previousIn)
-        emit inChanged(in);
+    if (in != m_previousIn) {
+        int delta = in - MLT.producer()->get_in();
+        MLT.setIn(in);
+        emit inChanged(delta);
+    }
     m_previousIn = in;
     updateSelection();
 }
 
 void Player::onOutChanged(int out)
 {
-    if (out != m_previousOut)
-        emit outChanged(out);
+    if (out != m_previousOut) {
+        int delta = out - MLT.producer()->get_out();
+        MLT.setOut(out);
+        emit outChanged(delta);
+    }
     m_previousOut = out;
+    m_playPosition = m_previousOut; // prevent O key from pausing
     updateSelection();
 }
 
@@ -682,16 +743,16 @@ void Player::on_actionSkipPrevious_triggered()
     }
 }
 
-void Player::rewind()
+void Player::rewind(bool forceChangeDirection)
 {
     if (m_isSeekable)
-        emit rewound();
+        emit rewound(forceChangeDirection);
 }
 
-void Player::fastForward()
+void Player::fastForward(bool forceChangeDirection)
 {
     if (m_isSeekable) {
-        emit fastForwarded();
+        emit fastForwarded(forceChangeDirection);
         m_playPosition = m_position;
     } else {
         play();
@@ -761,24 +822,29 @@ void Player::setStatusLabel(const QString &text, int timeoutSeconds, QAction* ac
     else
         disconnect(m_statusLabel, SIGNAL(clicked(bool)));
 
-    // Cancel the fade out.
-    if (m_statusFadeOut->state() == QAbstractAnimation::Running) {
-        m_statusFadeOut->stop();
-    }
-    if (text.isEmpty()) {
-        // Make it transparent.
-        m_statusTimer.stop();
-        m_statusFadeOut->setStartValue(0);
-        m_statusFadeOut->start();
-    } else {
-        // Reset the fade out animation.
-        m_statusFadeOut->setStartValue(1);
-
-        // Fade in.
-        if (m_statusFadeIn->state() != QAbstractAnimation::Running && !m_statusTimer.isActive()) {
-            m_statusFadeIn->start();
-            m_statusTimer.start(timeoutSeconds * 1000);
+    if (Settings.drawMethod() == Qt::AA_UseDesktopOpenGL) {
+        // Cancel the fade out.
+        if (m_statusFadeOut->state() == QAbstractAnimation::Running) {
+            m_statusFadeOut->stop();
         }
+        if (text.isEmpty()) {
+            // Make it transparent.
+            m_statusTimer.stop();
+            m_statusFadeOut->setStartValue(0);
+            m_statusFadeOut->start();
+        } else {
+            // Reset the fade out animation.
+            m_statusFadeOut->setStartValue(1);
+
+            // Fade in.
+            if (m_statusFadeIn->state() != QAbstractAnimation::Running && !m_statusTimer.isActive()) {
+                m_statusFadeIn->start();
+                m_statusTimer.start(timeoutSeconds * 1000);
+            }
+        }
+    } else { // DirectX or software GL
+        m_statusLabel->show();
+        QTimer::singleShot(timeoutSeconds * 1000, this, SLOT(onFadeOutFinished()));
     }
 }
 
@@ -786,6 +852,9 @@ void Player::onFadeOutFinished()
 {
     m_statusLabel->disconnect(SIGNAL(clicked(bool)));
     m_statusLabel->setToolTip(QString());
+    // DirectX or software GL
+    if (Settings.drawMethod() != Qt::AA_UseDesktopOpenGL)
+        m_statusLabel->hide();
 }
 
 void Player::adjustScrollBars(float horizontal, float vertical)
@@ -894,11 +963,12 @@ void Player::onCaptureStateChanged(bool active)
 
 void Player::on_actionVolume_triggered()
 {
+    // We must show first to realizes the volume popup geometry.
+    m_volumePopup->show();
     int x = (m_volumePopup->width() - m_volumeWidget->width()) / 2;
     x = mapToParent(m_volumeWidget->geometry().bottomLeft()).x() - x;
     int y = m_scrubber->geometry().height() - m_volumePopup->height();
     m_volumePopup->move(mapToGlobal(m_scrubber->geometry().bottomLeft()) + QPoint(x, y));
-    m_volumePopup->show();
     m_volumeWidget->hide();
     m_volumeWidget->show();
 }
@@ -938,41 +1008,41 @@ void Player::setZoom(float factor, const QIcon& icon)
     }
 }
 
-void Player::zoomFit()
+void Player::onZoomTriggered()
 {
-    setZoom(0.0f, m_zoomFitAction->icon());
-}
-
-void Player::zoomOriginal()
-{
-    setZoom(1.0f, m_zoomOriginalAction->icon());
-}
-
-void Player::zoomOut50()
-{
-    setZoom(0.5f, m_zoomOutAction50->icon());
-}
-
-void Player::zoomOut25()
-{
-    setZoom(0.25f, m_zoomOutAction25->icon());
-}
-
-void Player::zoomIn()
-{
-    setZoom(2.0f, m_zoomInAction->icon());
+    QAction* action = qobject_cast<QAction*>(sender());
+    setZoom(action->data().toFloat(), action->icon());
 }
 
 void Player::toggleZoom(bool checked)
 {
-    if (!checked || m_zoomToggleFactor == 0.0f)
-        zoomFit();
-    else if (m_zoomToggleFactor == 1.0f)
-        zoomOriginal();
-    else if (m_zoomToggleFactor == 0.5f)
-        zoomOut50();
-    else if (m_zoomToggleFactor == 0.25f)
-        zoomOut25();
-    else if (m_zoomToggleFactor == 2.0f)
-        zoomIn();
+    foreach (QAction* a, m_zoomMenu->actions()) {
+        if ((!checked || m_zoomToggleFactor == 0.0f) && a->data().toFloat() == 0.0f) {
+            setZoom(0.0f, a->icon());
+            break;
+        } else if (a->data().toFloat() == m_zoomToggleFactor) {
+            setZoom(m_zoomToggleFactor, a->icon());
+            break;
+        }
+    }
+}
+
+void Player::onGridToggled()
+{
+    m_gridButton->setChecked(true);
+    m_gridDefaultAction = qobject_cast<QAction*>(sender());
+    emit gridChanged(m_gridDefaultAction->data().toInt());
+}
+
+void Player::toggleGrid(bool checked)
+{
+    QAction* action = m_gridActionGroup->checkedAction();
+    if(!checked) {
+        if(action)
+            action->setChecked(false);
+        emit gridChanged(0);
+    } else {
+        if(!action)
+            m_gridDefaultAction->trigger();
+    }
 }

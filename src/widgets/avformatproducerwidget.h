@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2012-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2012-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,8 +19,10 @@
 #define AVFORMATPRODUCERWIDGET_H
 
 #include <QWidget>
+#include <QRunnable>
 #include "abstractproducerwidget.h"
 #include "sharedframe.h"
+#include "dialogs/transcodedialog.h"
 
 namespace Ui {
     class AvformatProducerWidget;
@@ -37,16 +38,22 @@ public:
 
     // AbstractProducerWidget overrides
     Mlt::Producer* newProducer(Mlt::Profile&);
+    void setProducer(Mlt::Producer*);
 
 signals:
     void producerChanged(Mlt::Producer*);
     void producerReopened();
+    void modified();
 
 protected:
     void keyPressEvent(QKeyEvent *event);
 
 private slots:
     void onFrameDisplayed(const SharedFrame&);
+
+    void onProducerChanged();
+
+    void onFrameDecoded();
 
     void on_resetButton_clicked();
 
@@ -80,13 +87,41 @@ private slots:
 
     void on_actionFFmpegIntegrityCheck_triggered();
 
+    void on_actionFFmpegConvert_triggered();
+
+    void on_reverseButton_clicked();
+
+    void on_actionExtractSubclip_triggered();
+
+    void on_actionSetFileDate_triggered();
+
+    void on_rangeComboBox_activated(int index);
+
 private:
     Ui::AvformatProducerWidget *ui;
     int m_defaultDuration;
     bool m_recalcDuration;
+    bool m_askToConvert;
 
     void reopen(Mlt::Producer* p);
     void recreateProducer();
+    void convert(TranscodeDialog& dialog);
+};
+
+
+class DecodeTask : public QObject, public QRunnable
+{
+    Q_OBJECT
+
+public:
+    explicit DecodeTask(AvformatProducerWidget* widget);
+    void run();
+
+signals:
+    void frameDecoded();
+
+private:
+    QScopedPointer<Mlt::Frame> m_frame;
 };
 
 #endif // AVFORMATPRODUCERWIDGET_H

@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2014-2015 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2014-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,6 +19,7 @@ import QtQuick 2.2
 import QtQuick.Controls 1.1
 import QtQuick.Layouts 1.1
 import Shotcut.Controls 1.0
+import org.shotcut.qml 1.0
 
 Item {
     width: 100
@@ -29,13 +29,22 @@ Item {
 
     Component.onCompleted: {
         if (filter.isNew) {
-            duration = Math.ceil(settings.videoInDuration * profile.fps)
-            filter.set('opacity', '0~=0; %1=1'.arg(duration - 1))
             filter.set('alpha', 1)
-            filter.set('in', filter.producerIn)
-            filter.set('out', filter.getDouble('in') + duration - 1)
+            duration = Math.ceil(settings.videoInDuration * profile.fps)
+        } else if (filter.animateIn === 0) {
+            // Convert legacy filter.
+            duration = filter.duration
+            filter.in = producer.in
+            filter.out = producer.out
+        } else {
+            duration = filter.animateIn
         }
         alphaCheckbox.checked = filter.get('alpha') != 1
+    }
+
+    Connections {
+        target: filter
+        onAnimateInChanged: duration = filter.animateIn
     }
 
     ColumnLayout {
@@ -48,8 +57,12 @@ Item {
                 id: timeSpinner
                 minimumValue: 2
                 maximumValue: 5000
-                value: filter.getDouble('out') - filter.getDouble('in') + 1
-                onValueChanged: filter.set('out', filter.getDouble('in') + value - 1)
+                onValueChanged: {
+                    filter.animateIn = duration
+                    filter.resetProperty('opacity')
+                    filter.set('opacity', 0, 0, KeyframesModel.SmoothInterpolation)
+                    filter.set('opacity', 1, duration - 1)
+                }
                 onSetDefaultClicked: {
                     duration = Math.ceil(settings.videoInDuration * profile.fps)
                 }

@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2014 Meltytech, LLC
- * Author: Brian Matherly <code@brianmatherly.com>
+ * Copyright (c) 2014-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -29,6 +28,7 @@
 
 class QTimerEvent;
 
+
 class FilterController : public QObject
 {
     Q_OBJECT
@@ -39,18 +39,23 @@ public:
     AttachedFiltersModel* attachedModel();
 
     QmlMetadata* metadataForService(Mlt::Service *service);
+    QmlFilter* currentFilter() const { return m_currentFilter.data(); }
 
 protected:
     void timerEvent(QTimerEvent*);
 
 signals:
-    void currentFilterAboutToChange();
     void currentFilterChanged(QmlFilter* filter, QmlMetadata* meta, int index);
     void statusChanged(QString);
+    void filterChanged(Mlt::Filter*);
 
 public slots:
     void setProducer(Mlt::Producer *producer = 0);
-    void setCurrentFilter(int attachedIndex);
+    void setCurrentFilter(int attachedIndex, bool isNew = false);
+    void onFadeInChanged();
+    void onFadeOutChanged();
+    void onFilterInChanged(int delta, Mlt::Filter* filter = 0);
+    void onFilterOutChanged(int delta, Mlt::Filter* filter = 0);
 
 private slots:
     void handleAttachedModelChange();
@@ -59,12 +64,15 @@ private slots:
     void handleAttachedRowsRemoved(const QModelIndex & parent, int first, int last);
     void handleAttachedRowsInserted(const QModelIndex & parent, int first, int last);
     void handleAttachDuplicateFailed(int index);
+    void onQmlFilterChanged();
+    void onQmlFilterChanged(const QString& name);
 
 private:
     void loadFilterMetadata();
 
     QFuture<void> m_future;
     QScopedPointer<QmlFilter> m_currentFilter;
+    Mlt::Filter* m_mltFilter;
     MetadataModel m_metadataModel;
     AttachedFiltersModel m_attachedModel;
     int m_currentFilterIndex;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2016 Meltytech, LLC
+ * Copyright (c) 2013-2018 Meltytech, LLC
  * Author: Dan Dennedy <dan@dennedy.org>
  *
  * This program is free software: you can redistribute it and/or modify
@@ -25,6 +25,7 @@ RowLayout {
     property var parameters: []
 
     // Tell the parent QML page to update its controls.
+    signal beforePresetLoaded()
     signal presetSelected()
 
     Component.onCompleted: {
@@ -38,8 +39,18 @@ RowLayout {
         Layout.maximumWidth: 300
         model: filter.presets
         onCurrentTextChanged: {
-            filter.preset(currentText)
-            presetSelected()
+            if (currentText.length > 0) {
+                filter.blockSignals = true
+                filter.animateIn = 0
+                filter.animateOut = 0
+                beforePresetLoaded()
+                filter.preset(currentText)
+                presetSelected()
+                filter.blockSignals = false
+                filter.changed()
+                filter.animateInChanged()
+                filter.animateOutChanged()
+            }
         }
     }
     Button {
@@ -72,7 +83,10 @@ RowLayout {
         height: 90
 
         function acceptName() {
-            presetCombo.currentIndex = filter.savePreset(parameters, nameField.text)
+            var params = parameters
+            params.push('shotcut:animIn')
+            params.push('shotcut:animOut')
+            presetCombo.currentIndex = filter.savePreset(params, nameField.text)
             nameDialog.close()
         }
 

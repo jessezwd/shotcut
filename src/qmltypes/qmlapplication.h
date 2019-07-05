@@ -1,7 +1,5 @@
 /*
- * Copyright (c) 2014-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
- * Author: Brian Matherly <pez4brian@yahoo.com>
+ * Copyright (c) 2014-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,6 +24,10 @@
 #include <QColor>
 #include <QRect>
 
+namespace Mlt {
+    class Producer;
+}
+
 class QmlApplication : public QObject
 {
     Q_OBJECT
@@ -34,10 +36,8 @@ class QmlApplication : public QObject
     Q_PROPERTY(QColor toolTipBaseColor READ toolTipBaseColor NOTIFY paletteChanged)
     Q_PROPERTY(QColor toolTipTextColor READ toolTipTextColor NOTIFY paletteChanged)
     Q_PROPERTY(QString OS READ OS CONSTANT)
-    Q_PROPERTY(QString numericLocale READ numericLocale CONSTANT)
     Q_PROPERTY(QRect mainWinRect READ mainWinRect);
     Q_PROPERTY(bool hasFiltersOnClipboard READ hasFiltersOnClipboard NOTIFY filtersCopied)
-
 
 public:
     static QmlApplication& singleton();
@@ -46,15 +46,19 @@ public:
     static QColor toolTipBaseColor();
     static QColor toolTipTextColor();
     static QString OS();
-    static QString numericLocale();
     static QRect mainWinRect();
     static bool hasFiltersOnClipboard();
     Q_INVOKABLE static void copyFilters();
     Q_INVOKABLE static void pasteFilters();
+    Q_INVOKABLE static QString timecode(int frames);
+    Q_INVOKABLE static int audioChannels();
+    Q_INVOKABLE static QString getNextProjectFile(const QString& filename);
+    Q_INVOKABLE static bool isProjectFolder();
 
 signals:
     void paletteChanged();
     void filtersCopied();
+    void filtersPasted(Mlt::Producer*);
 
 private:
     explicit QmlApplication();

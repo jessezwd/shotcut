@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2011-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2011-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,6 +25,7 @@
 #include <QNetworkAccessManager>
 #include <QScopedPointer>
 #include <QSharedPointer>
+#include <QRunnable>
 #include "mltcontroller.h"
 #include "mltxmlchecker.h"
 
@@ -40,8 +40,6 @@ class EncodeDock;
 class JobsDock;
 class PlaylistDock;
 class QUndoStack;
-class MeltedPlaylistDock;
-class MeltedServerDock;
 class QActionGroup;
 class FilterController;
 class ScopeController;
@@ -50,6 +48,25 @@ class HtmlEditor;
 class TimelineDock;
 class AutoSaveFile;
 class QNetworkReply;
+class KeyframesDock;
+
+class AppendTask : public QObject, public QRunnable
+{
+    Q_OBJECT
+public:
+    AppendTask(const QStringList& filenames)
+        : QRunnable()
+        , filenames(filenames)
+        {}
+    void run();
+
+signals:
+    void appendToPlaylist(QString);
+    void done();
+
+private:
+    const QStringList filenames;
+};
 
 class MainWindow : public QMainWindow
 {
@@ -62,7 +79,7 @@ public:
     bool continueModified();
     bool continueJobsRunning();
     QUndoStack* undoStack() const;
-    void saveXML(const QString& filename, bool withRelativePaths = true);
+    bool saveXML(const QString& filename, bool withRelativePaths = true);
     static void changeTheme(const QString& theme);
     PlaylistDock* playlistDock() const { return m_playlistDock; }
     FilterController* filterController() const { return m_filterController; }
@@ -78,12 +95,23 @@ public:
     QString getHash(Mlt::Properties& properties) const;
     void setProfile(const QString& profile_name);
     QString fileName() const { return m_currentFile; }
+    bool isSourceClipMyProject(QString resource = MLT.resource());
+    bool keyframesDockIsVisible() const;
 
     void keyPressEvent(QKeyEvent*);
     void keyReleaseEvent(QKeyEvent *);
     void hideSetDataDirectory();
+    QMenu* customProfileMenu() const { return m_customProfileMenu; }
+    QAction* actionAddCustomProfile() const;
+    QAction* actionProfileRemove() const;
+    QActionGroup* profileGroup() const { return m_profileGroup; }
+    void buildVideoModeMenu(QMenu *topMenu, QMenu *&customMenu, QActionGroup* group, QAction *addAction, QAction *removeAction);
+    void newProject(const QString& filename, bool isProjectFolder = false);
+    void addCustomProfile(const QString& name, QMenu* menu, QAction* action, QActionGroup* group);
+    void removeCustomProfiles(const QStringList& profiles, QDir &dir, QMenu* menu, QAction* action);
 
 signals:
+    void audioChannelsChanged();
     void producerOpened();
     void profileChanged();
     void openFailed(QString);
@@ -99,17 +127,22 @@ protected:
 
 private:
     void setupSettingsMenu();
+    void setupOpenOtherMenu();
     QAction *addProfile(QActionGroup* actionGroup, const QString& desc, const QString& name);
+    QAction *addLayout(QActionGroup* actionGroup, const QString& name);
     void readPlayerSettings();
     void readWindowSettings();
     void writeSettings();
     void configureVideoWidget();
     void setCurrentFile(const QString &filename);
+    void changeAudioChannels(bool checked, int channels);
     void changeDeinterlacer(bool checked, const char* method);
     void changeInterpolation(bool checked, const char* method);
     bool checkAutoSave(QString &url);
     void stepLeftBySeconds(int sec);
     bool saveRepairedXmlFile(MltXmlChecker& checker, QString& fileName);
+    void setAudioChannels(int channels);
+    void showSaveError();
 
     Ui::MainWindow* ui;
     Player* m_player;
@@ -123,11 +156,10 @@ private:
     bool m_isKKeyPressed;
     QUndoStack* m_undoStack;
     QDockWidget* m_historyDock;
-    MeltedServerDock* m_meltedServerDock;
-    MeltedPlaylistDock* m_meltedPlaylistDock;
     QActionGroup* m_profileGroup;
     QActionGroup* m_externalGroup;
     QActionGroup* m_keyerGroup;
+    QActionGroup* m_layoutGroup;
     FiltersDock* m_filtersDock;
     FilterController* m_filterController;
     ScopeController* m_scopeController;
@@ -145,6 +177,7 @@ private:
     QScopedPointer<QAction> m_statusBarAction;
     QNetworkAccessManager m_network;
     QString m_upgradeUrl;
+    KeyframesDock* m_keyframesDock;
 
 #ifdef WITH_LIBLEAP
     LeapListener m_leapListener;
@@ -155,6 +188,8 @@ public slots:
     bool isXmlRepaired(MltXmlChecker& checker, QString& fileName);
     void updateAutoSave();
     void open(QString url, const Mlt::Properties* = 0);
+    void openMultiple(const QStringList& paths);
+    void openMultiple(const QList<QUrl>& urls);
     void openVideo();
     void openCut(Mlt::Producer* producer);
     void hideProducer();
@@ -163,6 +198,7 @@ public slots:
     void showStatusMessage(const QString& message, int timeoutSeconds = 5);
     void seekPlaylist(int start);
     void seekTimeline(int position);
+    void seekKeyframes(int position);
     QWidget* loadProducerWidget(Mlt::Producer* producer);
     void onProducerOpened();
     void onGpuNotSupported();
@@ -174,22 +210,24 @@ public slots:
     void setInToCurrent(bool ripple);
     void setOutToCurrent(bool ripple);
     void onShuttle(float x);
+    void onPropertiesDockTriggered(bool checked = true);
+    bool on_actionSave_triggered();
 
 private slots:
+    void showUpgradePrompt();
     void on_actionAbout_Shotcut_triggered();
     void on_actionOpenOther_triggered();
     void onProducerChanged();
-    bool on_actionSave_triggered();
     bool on_actionSave_As_triggered();
     void onEncodeTriggered(bool checked = true);
     void onCaptureStateChanged(bool started);
-    void onJobsDockTriggered(bool);
+    void onJobsDockTriggered(bool = true);
     void onRecentDockTriggered(bool checked = true);
-    void onPropertiesDockTriggered(bool checked = true);
     void onPlaylistDockTriggered(bool checked = true);
     void onTimelineDockTriggered(bool checked = true);
     void onHistoryDockTriggered(bool checked = true);
     void onFiltersDockTriggered(bool checked = true);
+    void onKeyframesDockTriggered(bool checked = true);
     void onPlaylistCreated();
     void onPlaylistLoaded();
     void onPlaylistCleared();
@@ -200,6 +238,7 @@ private slots:
     void onMultitrackModified();
     void onMultitrackDurationChanged();
     void onCutModified();
+    void onProducerModified();
     void onFilterModelChanged();
     void updateMarkers();
     void updateThumbnails();
@@ -207,11 +246,12 @@ private slots:
     void on_actionRedo_triggered();
     void on_actionFAQ_triggered();
     void on_actionForum_triggered();
-    void onMeltedUnitOpened();
-    void onMeltedUnitActivated();
     void on_actionEnter_Full_Screen_triggered();
     void on_actionRealtime_triggered(bool checked);
     void on_actionProgressive_triggered(bool checked);
+    void on_actionChannels1_triggered(bool checked);
+    void on_actionChannels2_triggered(bool checked);
+    void on_actionChannels6_triggered(bool checked);
     void on_actionOneField_triggered(bool checked);
     void on_actionLinearBlend_triggered(bool checked);
     void on_actionYadifTemporal_triggered(bool checked);
@@ -249,7 +289,7 @@ private slots:
     void onTimelineClipSelected();
     void onAddAllToTimeline(Mlt::Playlist* playlist);
     void on_actionScrubAudio_triggered(bool checked);
-#ifdef Q_OS_WIN
+#if !defined(Q_OS_MAC)
     void onDrawingMethodTriggered(QAction*);
 #endif
     void on_actionApplicationLog_triggered();
@@ -268,6 +308,24 @@ private slots:
     void on_actionAppDataSet_triggered();
     void on_actionAppDataShow_triggered();
     void on_actionNew_triggered();
+    void on_actionKeyboardShortcuts_triggered();
+    void on_actionLayoutPlayer_triggered();
+    void on_actionLayoutPlaylist_triggered();
+    void on_actionLayoutTimeline_triggered();
+    void on_actionLayoutClip_triggered();
+    void on_actionLayoutAdd_triggered();
+    void onLayoutTriggered(QAction*);
+    void on_actionProfileRemove_triggered();
+    void on_actionLayoutRemove_triggered();
+    void onAppendToPlaylist(const QString& xml);
+    void onAppendTaskDone();
+    void on_actionOpenOther2_triggered();
+    void onOpenOtherTriggered(QWidget* widget);
+    void onOpenOtherTriggered();
+    void on_actionClearRecentOnExit_toggled(bool arg1);
+    void onSceneGraphInitialized();
+    void on_actionShowTextUnderIcons_toggled(bool b);
+    void on_actionShowSmallIcons_toggled(bool b);
 };
 
 #define MAIN MainWindow::singleton()

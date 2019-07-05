@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,6 +29,8 @@ Rectangle {
     property bool isCurrentTrack: false
     property bool isLocked: false
     property var selection
+    property alias clipCount: repeater.count
+    property bool isMute: false
 
     signal clipClicked(var clip, var track)
     signal clipDragged(var clip, int x, int y)
@@ -37,9 +38,9 @@ Rectangle {
     signal clipDraggedToTrack(var clip, int direction)
     signal checkSnap(var clip)
 
-    function redrawWaveforms() {
+    function redrawWaveforms(force) {
         for (var i = 0; i < repeater.count; i++)
-            repeater.itemAt(i).generateWaveform()
+            repeater.itemAt(i).generateWaveform(force)
     }
 
     function remakeWaveforms(force) {
@@ -61,6 +62,7 @@ Rectangle {
 
     color: 'transparent'
     width: clipRow.width
+    onIsMuteChanged: if (!isMute) redrawWaveforms(true)
 
     DelegateModel {
         id: trackModel
@@ -82,7 +84,9 @@ Rectangle {
             fadeOut: model.fadeOut
             hash: model.hash
             speed: model.speed
+            audioIndex: model.audioIndex
             selected: trackRoot.isCurrentTrack && trackRoot.selection.indexOf(index) !== -1
+            isTrackMute: trackRoot.isMute
 
             onClicked: trackRoot.clipClicked(clip, trackRoot);
             onMoved: {
@@ -95,15 +99,11 @@ Rectangle {
                 if (placeHolderAdded) {
                     placeHolderAdded = false
                     if (fromTrack === toTrack)
-                        // XXX This is causing timeline to become undefined making function
-                        // call below to fail. This basically results in rejected operation
-                        // to the user, but at least it prevents the timeline from becoming
-                        // corrupt and out-of-sync with the model.
-                        trackModel.items.resolve(clipIndex, clipIndex + 1)
+                        multitrack.reload(true)
                     else
                         trackModel.items.remove(clipIndex, 1)
                 }
-                if (!timeline.moveClip(fromTrack, toTrack, clipIndex, frame))
+                if (!timeline.moveClip(fromTrack, toTrack, clipIndex, frame, settings.timelineRipple))
                     clip.x = clip.originalX
             }
             onDragged: {
@@ -112,25 +112,35 @@ Rectangle {
                     timeline.position = Math.round(clip.x / timeScale)
                 }
                 // Snap if Alt key is not down.
-                if (!(mouse.modifiers & Qt.AltModifier) && toolbar.snap)
+                if (!(mouse.modifiers & Qt.AltModifier) && settings.timelineSnap)
                     trackRoot.checkSnap(clip)
+
                 // Prevent dragging left of multitracks origin.
                 clip.x = Math.max(0, clip.x)
                 var mapped = trackRoot.mapFromItem(clip, mouse.x, mouse.y)
                 trackRoot.clipDragged(clip, mapped.x, mapped.y)
+
+                // Show distance moved as time in a "bubble" help.
+                var delta = Math.round(clip.x / timeScale) - model.start
+                var s = application.timecode(Math.abs(delta))
+                // remove leading zeroes
+                if (s.substring(0, 3) === '00:')
+                    s = s.substring(3)
+                s = ((delta < 0)? '-' : (delta > 0)? '+' : '') + s
+                bubbleHelp.show(mapped.x, trackRoot.y + trackRoot.height, s)
             }
             onTrimmingIn: {
                 var originalDelta = delta
-                if (!(mouse.modifiers & Qt.AltModifier) && toolbar.snap && !toolbar.ripple)
-                    delta = Logic.snapTrimIn(clip, delta)
+                if (!(mouse.modifiers & Qt.AltModifier) && settings.timelineSnap && !settings.timelineRipple)
+                    delta = Logic.snapTrimIn(clip, delta, root, trackRoot.DelegateModel.itemsIndex)
                 if (delta != 0) {
-                    if (timeline.trimClipIn(trackRoot.DelegateModel.itemsIndex,
-                                            clip.DelegateModel.itemsIndex, delta, toolbar.ripple)) {
+                    if (timeline.trimClipIn(trackRoot.DelegateModel.itemsIndex, clip.DelegateModel.itemsIndex,
+                                            clip.originalClipIndex, delta, settings.timelineRipple)) {
                         // Show amount trimmed as a time in a "bubble" help.
-                        var s = timeline.timecode(Math.abs(clip.originalX))
+                        var s = application.timecode(Math.abs(clip.originalX))
                         s = '%1%2 = %3'.arg((clip.originalX < 0)? '-' : (clip.originalX > 0)? '+' : '')
                                        .arg(s.substring(3))
-                                       .arg(timeline.timecode(clipDuration))
+                                       .arg(application.timecode(clipDuration))
                         bubbleHelp.show(clip.x, trackRoot.y + trackRoot.height, s)
                     } else {
                         clip.originalX -= originalDelta
@@ -147,16 +157,16 @@ Rectangle {
             }
             onTrimmingOut: {
                 var originalDelta = delta
-                if (!(mouse.modifiers & Qt.AltModifier) && toolbar.snap && !toolbar.ripple)
-                    delta = Logic.snapTrimOut(clip, delta)
+                if (!(mouse.modifiers & Qt.AltModifier) && settings.timelineSnap && !settings.timelineRipple)
+                    delta = Logic.snapTrimOut(clip, delta, root, trackRoot.DelegateModel.itemsIndex)
                 if (delta != 0) {
                     if (timeline.trimClipOut(trackRoot.DelegateModel.itemsIndex,
-                                             clip.DelegateModel.itemsIndex, delta, toolbar.ripple)) {
+                                             clip.DelegateModel.itemsIndex, delta, settings.timelineRipple)) {
                         // Show amount trimmed as a time in a "bubble" help.
-                        var s = timeline.timecode(Math.abs(clip.originalX))
+                        var s = application.timecode(Math.abs(clip.originalX))
                         s = '%1%2 = %3'.arg((clip.originalX < 0)? '+' : (clip.originalX > 0)? '-' : '')
                                        .arg(s.substring(3))
-                                       .arg(timeline.timecode(clipDuration))
+                                       .arg(application.timecode(clipDuration))
                         bubbleHelp.show(clip.x + clip.width, trackRoot.y + trackRoot.height, s)
                     } else {
                         clip.originalX -= originalDelta
@@ -191,7 +201,12 @@ Rectangle {
                     })
                 }
             }
-            onDropped: placeHolderAdded = false
+            onDropped: {
+                if (placeHolderAdded) {
+                    multitrack.reload(true)
+                    placeHolderAdded = false
+                }
+            }
 
             Component.onCompleted: {
                 moved.connect(trackRoot.clipDropped)

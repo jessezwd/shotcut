@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,10 +23,11 @@
 namespace Playlist
 {
 
-AppendCommand::AppendCommand(PlaylistModel& model, const QString& xml, QUndoCommand *parent)
+AppendCommand::AppendCommand(PlaylistModel& model, const QString& xml, bool emitModified, QUndoCommand *parent)
     : QUndoCommand(parent)
     , m_model(model)
     , m_xml(xml)
+    , m_emitModified(emitModified)
 {
     setText(QObject::tr("Append playlist item %1").arg(m_model.rowCount() + 1));
 }
@@ -36,7 +36,7 @@ void AppendCommand::redo()
 {
     LOG_DEBUG() << "";
     Mlt::Producer producer(MLT.profile(), "xml-string", m_xml.toUtf8().constData());
-    m_model.append(producer);
+    m_model.append(producer, m_emitModified);
 }
 
 void AppendCommand::undo()
@@ -130,13 +130,16 @@ void ClearCommand::redo()
 void ClearCommand::undo()
 {
     LOG_DEBUG() << "";
-    m_model.close();
     Mlt::Producer* producer = new Mlt::Producer(MLT.profile(), "xml-string", m_xml.toUtf8().constData());
     if (producer->is_valid()) {
         producer->set("resource", "<playlist>");
-        MAIN.open(producer);
-        MLT.pause();
-        MAIN.seekPlaylist(0);
+        if (!MLT.setProducer(producer)) {
+            m_model.load();
+            MLT.pause();
+            MAIN.seekPlaylist(0);
+        }
+    } else {
+        LOG_ERROR() << "failed to restore playlist from XML";
     }
 }
 
@@ -159,6 +162,39 @@ void MoveCommand::undo()
 {
     LOG_DEBUG() << "from" << m_from << "to" << m_to;
     m_model.move(m_to, m_from);
+}
+
+SortCommand::SortCommand(PlaylistModel& model, int column, Qt::SortOrder order, QUndoCommand *parent)
+    : QUndoCommand(parent)
+    , m_model(model)
+    , m_column(column)
+    , m_order(order)
+{
+    m_xml = MLT.XML(m_model.playlist());
+    QString columnName = m_model.headerData(m_column, Qt::Horizontal, Qt::DisplayRole).toString();
+    setText(QObject::tr("Sort playlist by %1").arg(columnName));
+}
+
+void SortCommand::redo()
+{
+    LOG_DEBUG() << m_column;
+    m_model.sort(m_column, m_order);
+}
+
+void SortCommand::undo()
+{
+    LOG_DEBUG() << "";
+    Mlt::Producer* producer = new Mlt::Producer(MLT.profile(), "xml-string", m_xml.toUtf8().constData());
+    if (producer->is_valid()) {
+        producer->set("resource", "<playlist>");
+        if (!MLT.setProducer(producer)) {
+            m_model.load();
+            MLT.pause();
+            MAIN.seekPlaylist(0);
+        }
+    } else {
+        LOG_ERROR() << "failed to restore playlist from XML";
+    }
 }
 
 } // namespace Playlist

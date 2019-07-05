@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2015 Meltytech, LLC
- * Author: Lauren Dennedy
+ * Copyright (c) 2015-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,6 +24,7 @@ Item {
     width: 350
     height: 250
     Component.onCompleted: {
+        filter.blockSignals = true
         if (filter.isNew) {
             // Set preset parameter values
             filter.set('0', 40)
@@ -82,13 +82,15 @@ Item {
             filter.set('6', -17.5)
             filter.savePreset(preset.parameters)
         }
+        filter.blockSignals = false
+        filter.changed()
         setControls()
     }
 
     function setControls() {
         sliderRoom.value = filter.getDouble('0')
         sliderTime.value = filter.getDouble('1')
-        sliderDamp.value = filter.get('2') * sliderDamp.maximumValue
+        sliderDamp.value = filter.getDouble('2') * sliderDamp.maximumValue
         sliderInput.value = filter.getDouble('3') * sliderInput.maximumValue
         sliderDry.value = filter.getDouble('4')
         sliderReflection.value = filter.getDouble('5')

@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2014-2016 Meltytech, LLC
- * Author: Brian Matherly <code@brianmatherly.com>
+ * Copyright (c) 2014-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,6 +29,7 @@
 #include "qmltypes/qmlfilter.h"
 
 FilterController::FilterController(QObject* parent) : QObject(parent),
+ m_mltFilter(0),
  m_metadataModel(this),
  m_attachedModel(this),
  m_currentFilterIndex(-1)
@@ -63,6 +63,20 @@ void FilterController::loadFilterMetadata() {
                     meta->setPath(subdir);
                     meta->setParent(0);
                     addMetadata(meta);
+
+                    // Check if a keyframes minimum version is required.
+                    QScopedPointer<Mlt::Properties> mltMetadata(MLT.repository()->metadata(filter_type, meta->mlt_service().toLatin1().constData()));
+                    if (mltMetadata && mltMetadata->is_valid() && mltMetadata->get("version") && meta->keyframes()) {
+                        QString version = QString::fromLatin1(mltMetadata->get("version"));
+                        if (version.startsWith("lavfi"))
+                            version.remove(0, 5);
+                        meta->keyframes()->checkVersion(version);
+                        // MLT frei0r module did get mlt_animation support until v6.10 (6.9 while in development).
+                        if (meta->mlt_service().startsWith("frei0r.")) {
+                            if (mlt_version_get_major() < 6 || mlt_version_get_minor() < 9)
+                                meta->keyframes()->setDisabled();
+                        }
+                    }
                 }
             } else if (!meta) {
                 LOG_WARNING() << component.errorString();
@@ -119,7 +133,7 @@ void FilterController::setProducer(Mlt::Producer *producer)
     }
 }
 
-void FilterController::setCurrentFilter(int attachedIndex)
+void FilterController::setCurrentFilter(int attachedIndex, bool isNew)
 {
     if (attachedIndex == m_currentFilterIndex) {
         return;
@@ -129,13 +143,45 @@ void FilterController::setCurrentFilter(int attachedIndex)
     QmlMetadata* meta = m_attachedModel.getMetadata(m_currentFilterIndex);
     QmlFilter* filter = 0;
     if (meta) {
-        Mlt::Filter* mltFilter = m_attachedModel.getFilter(m_currentFilterIndex);
-        filter = new QmlFilter(mltFilter, meta);
+        m_mltFilter = m_attachedModel.getFilter(m_currentFilterIndex);
+        filter = new QmlFilter(*m_mltFilter, meta);
+        filter->setIsNew(isNew);
+        connect(filter, SIGNAL(changed()), SLOT(onQmlFilterChanged()));
+        connect(filter, SIGNAL(changed(QString)), SLOT(onQmlFilterChanged(const QString&)));
     }
 
-    emit currentFilterAboutToChange();
     emit currentFilterChanged(filter, meta, m_currentFilterIndex);
     m_currentFilter.reset(filter);
+}
+
+void FilterController::onFadeInChanged()
+{
+    if (m_currentFilter) {
+        emit m_currentFilter->changed();
+        emit m_currentFilter->animateInChanged();
+    }
+}
+
+void FilterController::onFadeOutChanged()
+{
+    if (m_currentFilter) {
+        emit m_currentFilter->changed();
+        emit m_currentFilter->animateOutChanged();
+    }
+}
+
+void FilterController::onFilterInChanged(int delta, Mlt::Filter* filter)
+{
+    if (delta && m_currentFilter && (!filter || m_currentFilter->filter().get_filter() == filter->get_filter())) {
+        emit m_currentFilter->inChanged(delta);
+    }
+}
+
+void FilterController::onFilterOutChanged(int delta, Mlt::Filter* filter)
+{
+    if (delta && m_currentFilter && (!filter || m_currentFilter->filter().get_filter() == filter->get_filter())) {
+        emit m_currentFilter->outChanged(delta);
+    }
 }
 
 void FilterController::handleAttachedModelChange()
@@ -150,24 +196,14 @@ void FilterController::handleAttachedModelAboutToReset()
 
 void FilterController::handleAttachedRowsRemoved(const QModelIndex&, int first, int)
 {
-    int newFilterIndex = first;
-    if (newFilterIndex >= m_attachedModel.rowCount()) {
-        newFilterIndex = m_attachedModel.rowCount() - 1;
-    }
     m_currentFilterIndex = -2; // Force update
-    setCurrentFilter(newFilterIndex);
+    setCurrentFilter(qBound(0, first, m_attachedModel.rowCount() - 1));
 }
 
 void FilterController::handleAttachedRowsInserted(const QModelIndex&, int first, int)
 {
-    m_currentFilterIndex = first;
-    Mlt::Filter* mltFilter = m_attachedModel.getFilter(m_currentFilterIndex);
-    QmlMetadata* meta = m_attachedModel.getMetadata(m_currentFilterIndex);
-    QmlFilter* filter = new QmlFilter(mltFilter, meta);
-    filter->setIsNew(true);
-    emit currentFilterAboutToChange();
-    emit currentFilterChanged(filter, meta, m_currentFilterIndex);
-    m_currentFilter.reset(filter);
+    m_currentFilterIndex = -2; // Force update
+    setCurrentFilter(qBound(0, first, m_attachedModel.rowCount() - 1), true);
 }
 
 void FilterController::handleAttachDuplicateFailed(int index)
@@ -175,6 +211,19 @@ void FilterController::handleAttachDuplicateFailed(int index)
     const QmlMetadata* meta = m_attachedModel.getMetadata(index);
     emit statusChanged(tr("Only one %1 filter is allowed.").arg(meta->name()));
     setCurrentFilter(index);
+}
+
+void FilterController::onQmlFilterChanged()
+{
+    emit filterChanged(m_mltFilter);
+}
+
+void FilterController::onQmlFilterChanged(const QString &name)
+{
+    if (name == "disable") {
+        QModelIndex index = m_attachedModel.index(m_currentFilterIndex);
+        emit m_attachedModel.dataChanged(index, index, QVector<int>() << Qt::CheckStateRole);
+    }
 }
 
 void FilterController::addMetadata(QmlMetadata* meta)

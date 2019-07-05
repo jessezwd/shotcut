@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -53,12 +52,11 @@ public:
     MultitrackModel* model() { return &m_model; }
     int position() const { return m_position; }
     void setPosition(int position);
-    Q_INVOKABLE QString timecode(int frames);
     Mlt::ClipInfo* getClipInfo(int trackIndex, int clipIndex);
     Mlt::Producer* producerForClip(int trackIndex, int clipIndex);
     int clipIndexAtPlayhead(int trackIndex = -1);
     int clipIndexAtPosition(int trackIndex, int position);
-    void chooseClipAtPosition(int position, int * trackIndex, int * clipIndex);
+    void chooseClipAtPosition(int position, int& trackIndex, int& clipIndex);
     void setCurrentTrack(int currentTrack);
     int currentTrack() const;
     int clipCount(int trackIndex) const;
@@ -78,6 +76,9 @@ public:
     bool isRipple() const;
     Q_INVOKABLE bool isMultitrackSelected() const { return m_selection.isMultitrackSelected; }
     Q_INVOKABLE int selectedTrack() const { return m_selection.selectedTrack; }
+    Q_INVOKABLE bool isFloating() const { return QDockWidget::isFloating(); }
+    Q_INVOKABLE void copyToSource();
+    Q_INVOKABLE static void openProperties();
 
 signals:
     void currentTrackChanged();
@@ -94,7 +95,10 @@ signals:
     void clipClicked();
     void showStatusMessage(QString);
     void clipCopied();
-    void clipMoved(int fromTrack, int toTrack, int clipIndex, int position);
+    void clipMoved(int fromTrack, int toTrack, int clipIndex, int position, bool ripple);
+    void filteredClicked();
+    void imageDurationChanged();
+    void transitionAdded(int trackIndex, int clipIndex, int position, bool ripple);
 
 public slots:
     void addAudioTrack();
@@ -116,9 +120,9 @@ public slots:
     void toggleTrackHidden(int trackIndex);
     void setTrackComposite(int trackIndex, bool composite);
     void setTrackLock(int trackIndex, bool lock);
-    bool moveClip(int fromTrack, int toTrack, int clipIndex, int position);
-    void onClipMoved(int fromTrack, int toTrack, int clipIndex, int position);
-    bool trimClipIn(int trackIndex, int clipIndex, int delta, bool ripple);
+    bool moveClip(int fromTrack, int toTrack, int clipIndex, int position, bool ripple);
+    void onClipMoved(int fromTrack, int toTrack, int clipIndex, int position, bool ripple);
+    bool trimClipIn(int trackIndex, int clipIndex, int oldClipIndex, int delta, bool ripple);
     bool trimClipOut(int trackIndex, int clipIndex, int delta, bool ripple);
     void insert(int trackIndex, int position = -1, const QString &xml = QString());
     void overwrite(int trackIndex, int position = -1, const QString &xml = QString());
@@ -136,6 +140,9 @@ public slots:
     void emitSelectedFromSelection();
     void remakeAudioLevels(int trackIndex, int clipIndex, bool force = true);
     void commitTrimCommand();
+    void onRowsInserted(const QModelIndex& parent, int first, int last);
+    void onRowsRemoved(const QModelIndex& parent, int first, int last);
+    void detachAudio(int trackIndex, int clipIndex);
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event);
@@ -143,17 +150,18 @@ protected:
     void dragLeaveEvent(QDragLeaveEvent* event);
     void dropEvent(QDropEvent* event);
     bool event(QEvent *event);
+    void keyPressEvent(QKeyEvent* event);
+    void keyReleaseEvent(QKeyEvent* event);
 
 private:
     bool isBlank(int trackIndex, int clipIndex);
     void pulseLockButtonOnTrack(int trackIndex);
-    void load(bool force = false);
 
     Ui::TimelineDock *ui;
     QQuickWidget m_quickView;
     MultitrackModel m_model;
     int m_position;
-    Timeline::UpdateCommand* m_updateCommand;
+    QScopedPointer<Timeline::UpdateCommand> m_updateCommand;
     bool m_ignoreNextPositionChange;
     struct Selection {
         QList<int> selectedClips;
@@ -165,9 +173,14 @@ private:
     QScopedPointer<Timeline::TrimCommand> m_trimCommand;
     QScopedPointer<UndoHelper> m_undoHelper;
     int m_trimDelta;
+    int m_transitionDelta;
 
 private slots:
-    void onVisibilityChanged(bool visible);
+    void load(bool force = false);
+    void onTopLevelChanged(bool floating);
+    void onTransitionAdded(int trackIndex, int clipIndex, int position, bool ripple);
+    void onInserted(int trackIndex, int clipIndex);
+    void onOverWritten(int trackIndex, int clipIndex);
 };
 
 #endif // TIMELINEDOCK_H

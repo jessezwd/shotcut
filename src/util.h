@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2014-2016 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2014-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,8 +20,12 @@
 
 #include <QString>
 #include <QPalette>
+#include <QUrl>
 
 class QWidget;
+namespace Mlt {
+    class Producer;
+}
 
 class Util
 {
@@ -31,6 +34,17 @@ private:
 public:
     static QString baseName(const QString &filePath);
     static void setColorsToHighlight(QWidget* widget, QPalette::ColorRole role = QPalette::Window);
+    static void showInFolder(const QString &path);
+    static bool warnIfNotWritable(const QString& filePath, QWidget* parent, const QString& caption, bool remove = false);
+    static QString producerTitle(const Mlt::Producer& producer);
+    static QString removeFileScheme(QUrl &url);
+    static QStringList sortedFileList(const QList<QUrl>& urls);
+    static int coerceMultiple(int value, int multiple = 2);
+    static QList<QUrl> expandDirectories(const QList<QUrl>& urls);
+    static bool isDecimalPoint(QChar ch);
+    static bool isNumeric(QString& str);
+    static bool convertNumericString(QString& str, QChar decimalPoint);
+    static bool convertDecimalPoints(QString& str, QChar decimalPoint);
 };
 
 #endif // UTIL_H

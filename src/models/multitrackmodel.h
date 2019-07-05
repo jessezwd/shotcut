@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2013-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -46,6 +45,7 @@ class MultitrackModel : public QAbstractItemModel
     Q_OBJECT
     Q_PROPERTY(int trackHeight READ trackHeight WRITE setTrackHeight NOTIFY trackHeightChanged)
     Q_PROPERTY(double scaleFactor READ scaleFactor WRITE setScaleFactor NOTIFY scaleFactorChanged)
+    Q_PROPERTY(bool filtered READ isFiltered NOTIFY filteredChanged)
 
 public:
     /// Two level model: tracks and clips on track
@@ -69,7 +69,10 @@ public:
         FadeOutRole,     /// clip only
         IsTransitionRole,/// clip only
         FileHashRole,    /// clip only
-        SpeedRole        /// clip only
+        SpeedRole,       /// clip only
+        IsFilteredRole,
+        IsBottomVideoRole,/// track only
+        AudioIndexRole   /// clip only
     };
 
     explicit MultitrackModel(QObject *parent = 0);
@@ -78,7 +81,7 @@ public:
     Mlt::Tractor* tractor() const { return m_tractor; }
     const TrackList& trackList() const { return m_trackList; }
 
-    int rowCount(const QModelIndex &parent) const;
+    int rowCount(const QModelIndex &parent = QModelIndex()) const;
     int columnCount(const QModelIndex &parent) const;
     QVariant data(const QModelIndex &index, int role) const;
     QModelIndex index(int row, int column = 0,
@@ -86,14 +89,13 @@ public:
     QModelIndex makeIndex(int trackIndex, int clipIndex) const;
     QModelIndex parent(const QModelIndex &index) const;
     QHash<int, QByteArray> roleNames() const;
-    void audioLevelsReady(const QModelIndex &index);
+    Q_INVOKABLE void audioLevelsReady(const QModelIndex &index);
     bool createIfNeeded();
     void addBackgroundTrack();
     int addAudioTrack();
     int addVideoTrack();
     void removeTrack(int trackIndex);
     void load();
-    Q_INVOKABLE void reload();
     void close();
     int clipIndex(int trackIndex, int position);
     bool trimClipInValid(int trackIndex, int clipIndex, int delta, bool ripple);
@@ -117,6 +119,12 @@ signals:
     void scaleFactorChanged();
     void showStatusMessage(QString);
     void durationChanged();
+    void filteredChanged();
+    void filterInChanged(int delta, Mlt::Filter*);
+    void filterOutChanged(int delta, Mlt::Filter*);
+    void reloadRequested();
+    void inserted(int trackIndex, int clipIndex);
+    void overWritten(int trackIndex, int clipIndex);
 
 public slots:
     void refreshTrackList();
@@ -129,8 +137,8 @@ public slots:
     void notifyClipIn(int trackIndex, int clipIndex);
     int trimClipOut(int trackIndex, int clipIndex, int delta, bool ripple);
     void notifyClipOut(int trackIndex, int clipIndex);
-    bool moveClipValid(int fromTrack, int toTrack, int clipIndex, int position);
-    bool moveClip(int fromTrack, int toTrack, int clipIndex, int position);
+    bool moveClipValid(int fromTrack, int toTrack, int clipIndex, int position, bool ripple);
+    bool moveClip(int fromTrack, int toTrack, int clipIndex, int position, bool ripple);
     int overwriteClip(int trackIndex, Mlt::Producer& clip, int position, bool seek = true);
     QString overwrite(int trackIndex, Mlt::Producer& clip, int position, bool seek = true);
     int insertClip(int trackIndex, Mlt::Producer& clip, int position);
@@ -144,7 +152,7 @@ public slots:
     void fadeIn(int trackIndex, int clipIndex, int duration);
     void fadeOut(int trackIndex, int clipIndex, int duration);
     bool addTransitionValid(int fromTrack, int toTrack, int clipIndex, int position);
-    int addTransition(int trackIndex, int clipIndex, int position);
+    int addTransition(int trackIndex, int clipIndex, int position, bool ripple);
     void removeTransition(int trackIndex, int clipIndex);
     void removeTransitionByTrimIn(int trackIndex, int clipIndex, int delta);
     void removeTransitionByTrimOut(int trackIndex, int clipIndex, int delta);
@@ -158,16 +166,19 @@ public slots:
     void addTransitionByTrimOut(int trackIndex, int clipIndex, int delta);
     bool removeTransitionByTrimInValid(int trackIndex, int clipIndex, int delta);
     bool removeTransitionByTrimOutValid(int trackIndex, int clipIndex, int delta);
+    void filterAddedOrRemoved(Mlt::Producer *producer);
+    void onFilterChanged(Mlt::Filter* filter);
+    void reload(bool asynchronous = false);
 
 private:
     Mlt::Tractor* m_tractor;
     TrackList m_trackList;
     bool m_isMakingTransition;
 
-    bool moveClipToTrack(int fromTrack, int toTrack, int clipIndex, int position);
-    void moveClipToEnd(Mlt::Playlist& playlist, int trackIndex, int clipIndex, int position);
-    void relocateClip(Mlt::Playlist& playlist, int trackIndex, int clipIndex, int position);
-    void moveClipInBlank(Mlt::Playlist& playlist, int trackIndex, int clipIndex, int position);
+    bool moveClipToTrack(int fromTrack, int toTrack, int clipIndex, int position, bool ripple);
+    void moveClipToEnd(Mlt::Playlist& playlist, int trackIndex, int clipIndex, int position, bool ripple);
+    void relocateClip(Mlt::Playlist& playlist, int trackIndex, int clipIndex, int position, bool ripple);
+    void moveClipInBlank(Mlt::Playlist& playlist, int trackIndex, int clipIndex, int position, bool ripple, int duration = 0);
     void consolidateBlanks(Mlt::Playlist& playlist, int trackIndex);
     void consolidateBlanksAllTracks();
     void getAudioLevels();
@@ -181,12 +192,16 @@ private:
     void loadPlaylist();
     void removeRegion(int trackIndex, int position, int length);
     void clearMixReferences(int trackIndex, int clipIndex);
+    bool isFiltered(Mlt::Producer* producer = 0) const;
+    int getDuration();
+    void adjustServiceFilterDurations(Mlt::Service& service, int duration);
 
     friend class UndoHelper;
 
 private slots:
     void adjustBackgroundDuration();
-
+    void adjustTrackFilters();
+    void adjustClipFilters(Mlt::Producer& producer, int in, int out, int inDelta, int outDelta);
 };
 
 #endif // MULTITRACKMODEL_H

@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2012-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2012-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -76,6 +75,12 @@ private slots:
 
     void on_actionRemoveAll_triggered();
 
+    void on_actionSortByName_triggered();
+
+    void on_actionSortByDate_triggered();
+
+    void on_actionSetFileDate_triggered();
+
     void onPlaylistCreated();
 
     void onPlaylistLoaded();
@@ -113,6 +118,12 @@ private slots:
     void on_iconsButton_clicked();
 
     void on_detailsButton_clicked();
+
+    void onMovedToEnd();
+
+protected:
+    void keyPressEvent(QKeyEvent* event);
+    void keyReleaseEvent(QKeyEvent* event);
 
 private:
     void setViewMode(PlaylistModel::ViewMode mode);

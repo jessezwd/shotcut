@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2015 Meltytech, LLC
- * Author: Lauren Dennedy
+ * Copyright (c) 2015-2019 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,7 +24,7 @@ import Shotcut.Controls 1.0
 
 Item {
     width: 350
-    height: 250
+    height: 300
     Component.onCompleted: {
         if (filter.isNew) {
             // Set default parameter values
@@ -45,7 +44,7 @@ Item {
     function setControls() {
         sliderPeak.value = filter.getDouble('0') * sliderPeak.maximumValue
         sliderAttack.value = filter.getDouble('1')
-        sliderRelease.value = filter.get('2')
+        sliderRelease.value = filter.getDouble('2')
         sliderThreshold.value = filter.getDouble('3')
         sliderRatio.value = filter.getDouble('4')
         sliderRadius.value = filter.getDouble('5')
@@ -58,7 +57,7 @@ Item {
         running: false
         repeat: true
         onTriggered: {
-            grGauge.value = filter.get('8[0]')
+            grGauge.value = filter.getDouble('8[0]')
         }
     }
 

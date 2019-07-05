@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2014-2016 Meltytech, LLC
- * Author: Brian Matherly <code@brianmatherly.com>
+ * Copyright (c) 2014-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -35,6 +34,7 @@ Rectangle {
     }
     
     function setCurrentFilter(index) {
+        clearCurrentFilter()
         attachedFilters.setCurrentFilter(index)
         selectedIndex = index
         filterConfig.source = metadata ? metadata.qmlFilePath : ""
@@ -56,13 +56,6 @@ Rectangle {
     
     SystemPalette { id: activePalette }
     
-    FilterMenu {
-        id: filterMenu
-        onFilterSelected: {
-            attachedfiltersmodel.add(metadatamodel.get(index))
-        }
-    }
-
     Rectangle {
         id: titleBackground
         anchors {
@@ -128,10 +121,10 @@ Rectangle {
             id: addButton
             Layout.minimumWidth: height
             iconName: 'list-add'
-            enabled: attachedfiltersmodel.ready
+            enabled: attachedfiltersmodel.isProducerSelected
             opacity: enabled ? 1.0 : 0.5
             tooltip: qsTr('Add a filter')
-            onClicked: filterMenu.popup(addButton)
+            onClicked: filterMenu.open()
         }
         Button {
             id: removeButton            
@@ -186,6 +179,7 @@ Rectangle {
         onWidthChanged: expandWidth()
         Loader {
             id: filterConfig
+            enabled: !filterMenu.visible
             property int minimumWidth: 0
             onLoaded: {
                 minimumWidth = item.width
@@ -194,6 +188,20 @@ Rectangle {
         }
     }
         
+    FilterMenu {
+        id: filterMenu
+        anchors {
+            top: titleBackground.bottom
+            left: parent.left
+            right: parent.right
+            bottom: parent.bottom
+            topMargin: attachedContainer.anchors.topMargin
+        }
+        onFilterSelected: {
+            attachedfiltersmodel.add(metadatamodel.get(index))
+        }
+    }
+
     states: [
         State {
             name: "landscape"
@@ -207,8 +215,11 @@ Rectangle {
                 }
             }
             PropertyChanges {
-                target: attachedContainer; width: 200
-                height: root.height - addButton.height * 2
+                target: attachedContainer
+                width: 200
+                height: root.height -
+                    titleBackground.height - titleBackground.anchors.topMargin - titleBackground.anchors.bottomMargin -
+                    attachedContainer.anchors.topMargin - attachedContainer.anchors.bottomMargin
             }
         },
         State {
@@ -229,4 +240,9 @@ Rectangle {
             }
         }
     ]
+
+    Connections {
+        target: attachedfiltersmodel
+        onIsProducerSelectedChanged: filterMenu.close()
+    }
 }

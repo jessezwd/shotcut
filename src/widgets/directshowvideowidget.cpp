@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2014-2017 Meltytech, LLC
- * Author: Dan Dennedy <dan@dennedy.org>
+ * Copyright (c) 2014-2018 Meltytech, LLC
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -36,6 +35,10 @@ DirectShowVideoWidget::DirectShowVideoWidget(QWidget *parent) :
         ui->videoCombo->addItem(QCamera::deviceDescription(deviceName));
     foreach (const QAudioDeviceInfo &deviceInfo, QAudioDeviceInfo::availableDevices(QAudio::AudioInput))
         ui->audioCombo->addItem(deviceInfo.deviceName());
+    if (ui->videoCombo->count() > 1)
+        ui->videoCombo->setCurrentIndex(1);
+    if (ui->audioCombo->count() > 1)
+        ui->audioCombo->setCurrentIndex(1);
 #endif
 }
 
@@ -50,7 +53,7 @@ Mlt::Producer *DirectShowVideoWidget::newProducer(Mlt::Profile& profile)
     if (ui->videoCombo->currentIndex() > 0) {
         p = new Mlt::Producer(profile, QString("dshow:video=%1")
                           .arg(ui->videoCombo->currentText())
-                          .toLatin1().constData());
+                          .toUtf8().constData());
     }
     if (ui->audioCombo->currentIndex() > 0) {
         Mlt::Producer* audio = new Mlt::Producer(profile,
@@ -76,21 +79,21 @@ Mlt::Producer *DirectShowVideoWidget::newProducer(Mlt::Profile& profile)
         if (ui->videoCombo->currentIndex() > 0) {
             p->set("resource", QString("dshow:video=%1")
                    .arg(ui->videoCombo->currentText())
-                   .toLatin1().constData());
+                   .toUtf8().constData());
         }
         if (ui->audioCombo->currentIndex() > 0) {
             QString resource = QString("dshow:audio=%1").arg(ui->audioCombo->currentText());
             if (ui->videoCombo->currentIndex() > 0) {
-                p->set("resource2", resource.toLatin1().constData());
+                p->set("resource2", resource.toUtf8().constData());
             } else {
-                p->set("resource", resource.toLatin1().constData());
+                p->set("resource", resource.toUtf8().constData());
             }
         }
         p->set("error", 1);
     }
     p->set("force_seekable", 0);
     p->set(kBackgroundCaptureProperty, 1);
-    p->set(kShotcutCaptionProperty, tr("DirectShow").toUtf8().constData());
+    p->set(kShotcutCaptionProperty, tr("Audio/Video Device").toUtf8().constData());
     return p;
 }
 
